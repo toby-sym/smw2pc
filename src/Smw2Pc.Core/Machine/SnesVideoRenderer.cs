@@ -22,6 +22,9 @@ public static class SnesVideoRenderer
         interpolationProgress = float.IsFinite(interpolationProgress)
             ? Math.Clamp(interpolationProgress, 0f, 1f)
             : 1f;
+        var scrollInterpolationProgress = hardware.HasPreviousPpuFrameScrollOffsets
+            ? interpolationProgress
+            : 1f;
         var videoRam = hardware.VideoRam.Span;
         var colorRam = hardware.ColorRam.Span;
         var backdropColor = ReadColorValue(colorRam, 0);
@@ -60,11 +63,19 @@ public static class SnesVideoRenderer
                         pixelSources,
                         pixelColors,
                         videoRam,
-                        colorRam);
+                        colorRam,
+                        scrollInterpolationProgress);
                 }
             }
 
-            ApplyColorMath(hardware, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+            ApplyColorMath(
+                hardware,
+                rgbaPixels,
+                pixelSources,
+                pixelColors,
+                videoRam,
+                colorRam,
+                scrollInterpolationProgress);
             if (interpolationProgress < 1f && hardware.HasPreviousPpuFrameScrollOffsets)
             {
                 var sourcePixels = ArrayPool<byte>.Shared.Rent(frameByteCount);
@@ -109,6 +120,11 @@ public static class SnesVideoRenderer
         for (var screenY = 0; screenY < Height; screenY++)
         {
             var hardwareScanline = screenY + 1;
+            if ((hardware.GetPpuRegistersForScanline(hardwareScanline).Span[0x05] & 0x07) != 7)
+            {
+                continue;
+            }
+
             for (var background = 0; background < 4; background++)
             {
                 var (horizontal, vertical) = hardware.GetBackgroundScrollDeltaForScanline(hardwareScanline, background);
@@ -209,18 +225,19 @@ public static class SnesVideoRenderer
         Span<byte> pixelSources,
         Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam)
+        ReadOnlySpan<byte> colorRam,
+        float interpolationProgress)
     {
         var screenY = hardwareScanline - 1;
         var screenEnable = registers[subScreen ? 0x2D : 0x2C];
         var mode = registers[0x05] & 0x07;
         if (mode == 7)
         {
-            DrawModeSevenLayers(hardware, hardwareScanline, registers, screenEnable, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawModeSevenLayers(hardware, hardwareScanline, registers, screenEnable, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
         }
         else if (mode == 1)
         {
-            DrawModeOneLayers(hardware, registers, screenEnable, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+            DrawModeOneLayers(hardware, registers, screenEnable, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         }
         else
         {
@@ -245,7 +262,8 @@ public static class SnesVideoRenderer
                     pixelSources,
                     pixelColors,
                     videoRam,
-                    colorRam);
+                    colorRam,
+                    interpolationProgress);
             }
 
             if ((screenEnable & 0x10) != 0)
@@ -261,7 +279,8 @@ public static class SnesVideoRenderer
         ReadOnlySpan<byte> mainSources,
         Span<ushort> mainColors,
         ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam)
+        ReadOnlySpan<byte> colorRam,
+        float interpolationProgress)
     {
         var useSubScreen = false;
         for (var scanline = 0; scanline < Height; scanline++)
@@ -315,7 +334,8 @@ public static class SnesVideoRenderer
                             subSources,
                             subColors,
                             videoRam,
-                            colorRam);
+                            colorRam,
+                            interpolationProgress);
                     }
                 }
             }
@@ -565,27 +585,28 @@ public static class SnesVideoRenderer
         Span<byte> pixelSources,
         Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam)
+        ReadOnlySpan<byte> colorRam,
+        float interpolationProgress)
     {
         var hardwareScanline = screenY + 1;
         var bg3HighPriority = (registers[0x05] & 0x08) != 0;
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 2, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 2, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
         if (!bg3HighPriority)
         {
-            DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 2, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+            DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 2, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         }
 
         DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 1, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 0, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 1, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
+        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 0, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 2, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 1, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 0, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 1, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
+        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 0, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 3, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
         if (bg3HighPriority)
         {
-            DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 2, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+            DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 2, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         }
     }
 
@@ -723,14 +744,15 @@ public static class SnesVideoRenderer
         Span<byte> pixelSources,
         Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam)
+        ReadOnlySpan<byte> colorRam,
+        float interpolationProgress)
     {
         if ((screenEnable & (1 << background)) == 0)
         {
             return;
         }
 
-        DrawBackground(hardware, registers, hardwareScanline, background, mode: 1, priority, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawBackground(hardware, registers, hardwareScanline, background, mode: 1, priority, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
     }
 
     private static void DrawObjectsIfEnabled(
@@ -866,7 +888,8 @@ public static class SnesVideoRenderer
         Span<byte> pixelSources,
         Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam)
+        ReadOnlySpan<byte> colorRam,
+        float interpolationProgress)
     {
         var mapRegister = registers[0x07 + background];
         var mapBase = (mapRegister & 0xFC) << 9;
@@ -880,6 +903,19 @@ public static class SnesVideoRenderer
         var offsets = hardware.GetBackgroundOffsetsForScanline(hardwareScanline).Span;
         var horizontalOffset = offsets[background] % pixelWidth;
         var verticalOffset = offsets[background + 4] % pixelHeight;
+        var (horizontalDelta, verticalDelta) = hardware.GetBackgroundScrollDeltaForScanline(hardwareScanline, background);
+        if (Math.Abs(horizontalDelta) > MaximumInterpolatedScrollDelta)
+        {
+            horizontalDelta = 0;
+        }
+
+        if (Math.Abs(verticalDelta) > MaximumInterpolatedScrollDelta)
+        {
+            verticalDelta = 0;
+        }
+
+        var sampleShiftX = -horizontalDelta * (1f - interpolationProgress);
+        var sampleShiftY = -verticalDelta * (1f - interpolationProgress);
         var characterBaseRegister = registers[0x0B + background / 2];
         var characterBase = ((background & 1) == 0
             ? characterBaseRegister & 0x0F
@@ -887,9 +923,6 @@ public static class SnesVideoRenderer
         var bitsPerPixel = mode == 0 || (mode == 1 && background == 2) ? 2 : 4;
         var bytesPerTile = bitsPerPixel * 8;
         var scanlineRegisters = registers;
-        var worldY = (screenY + verticalOffset) % pixelHeight;
-        var cellY = worldY / tileHeight;
-        var localY = worldY % tileHeight;
         for (var screenX = 0; screenX < Width; screenX++)
         {
             if (IsLayerWindowed(scanlineRegisters, background, subScreen, screenX))
@@ -897,54 +930,195 @@ public static class SnesVideoRenderer
                 continue;
             }
 
-            var worldX = (screenX + horizontalOffset) % pixelWidth;
-            var cellX = worldX / tileWidth;
-            var localX = worldX % tileWidth;
-            var pixelLocalY = localY;
-            var mapIndex = GetMapByteIndex(mapBase, mapWidth, cellX, cellY);
-            var tileEntry = (ushort)(videoRam[mapIndex] | (videoRam[mapIndex + 1] << 8));
-            if (priority >= 0 && ((tileEntry & 0x2000) != 0) != (priority != 0))
-            {
-                continue;
-            }
-
-            var horizontalFlip = (tileEntry & 0x4000) != 0;
-            var verticalFlip = (tileEntry & 0x8000) != 0;
-            if (horizontalFlip)
-            {
-                localX = tileWidth - 1 - localX;
-            }
-
-            if (verticalFlip)
-            {
-                pixelLocalY = tileHeight - 1 - pixelLocalY;
-            }
-
-            var tileNumber = tileEntry & 0x03FF;
-            if (tileWidth == 16)
-            {
-                tileNumber += (pixelLocalY / 8 * 16) + (localX / 8);
-                localX &= 7;
-                pixelLocalY &= 7;
-            }
-
-            var tileAddress = (characterBase + (tileNumber * bytesPerTile)) & 0xFFFF;
-            var paletteIndex = ReadTilePixel(videoRam, tileAddress, bitsPerPixel, localX, pixelLocalY);
-            if (paletteIndex == 0)
-            {
-                continue;
-            }
-
-            var paletteGroup = (tileEntry >> 10) & 0x07;
-            var modeZeroPaletteBase = mode == 0 ? background * 32 : 0;
-            var colorIndex = modeZeroPaletteBase + (paletteGroup * (1 << bitsPerPixel)) + paletteIndex;
-            var colorValue = ReadColorValue(colorRam, colorIndex);
-            var color = ReadColor(colorValue, brightness, forcedBlank: false);
+            var sampleX = screenX + horizontalOffset + sampleShiftX;
+            var sampleY = screenY + verticalOffset + sampleShiftY;
+            var x0 = (int)MathF.Floor(sampleX);
+            var y0 = (int)MathF.Floor(sampleY);
+            var fractionX = sampleX - x0;
+            var fractionY = sampleY - y0;
             var pixelIndex = (screenY * Width) + screenX;
-            WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, color);
+            var destination = pixelColors[pixelIndex];
+            var destinationRed = destination & 0x1F;
+            var destinationGreen = (destination >> 5) & 0x1F;
+            var destinationBlue = (destination >> 10) & 0x1F;
+            var coverage = 0f;
+            var red = 0f;
+            var green = 0f;
+            var blue = 0f;
+
+            AccumulateBackgroundSample(
+                x0, y0, (1f - fractionX) * (1f - fractionY),
+                pixelWidth, pixelHeight, tileWidth, tileHeight, mapBase, mapWidth, characterBase,
+                bytesPerTile, bitsPerPixel, priority, mode, background, videoRam, colorRam,
+                ref coverage, ref red, ref green, ref blue);
+            if (fractionX > 0f)
+            {
+                AccumulateBackgroundSample(
+                    x0 + 1, y0, fractionX * (1f - fractionY),
+                    pixelWidth, pixelHeight, tileWidth, tileHeight, mapBase, mapWidth, characterBase,
+                    bytesPerTile, bitsPerPixel, priority, mode, background, videoRam, colorRam,
+                    ref coverage, ref red, ref green, ref blue);
+            }
+
+            if (fractionY > 0f)
+            {
+                AccumulateBackgroundSample(
+                    x0, y0 + 1, (1f - fractionX) * fractionY,
+                    pixelWidth, pixelHeight, tileWidth, tileHeight, mapBase, mapWidth, characterBase,
+                    bytesPerTile, bitsPerPixel, priority, mode, background, videoRam, colorRam,
+                    ref coverage, ref red, ref green, ref blue);
+                if (fractionX > 0f)
+                {
+                    AccumulateBackgroundSample(
+                        x0 + 1, y0 + 1, fractionX * fractionY,
+                        pixelWidth, pixelHeight, tileWidth, tileHeight, mapBase, mapWidth, characterBase,
+                        bytesPerTile, bitsPerPixel, priority, mode, background, videoRam, colorRam,
+                        ref coverage, ref red, ref green, ref blue);
+                }
+            }
+
+            if (coverage <= 0f)
+            {
+                continue;
+            }
+
+            var inverseCoverage = 1f - coverage;
+            var colorValue = (ushort)(
+                Math.Clamp((int)MathF.Round((red + (destinationRed * inverseCoverage))), 0, 31)
+                | (Math.Clamp((int)MathF.Round((green + (destinationGreen * inverseCoverage))), 0, 31) << 5)
+                | (Math.Clamp((int)MathF.Round((blue + (destinationBlue * inverseCoverage))), 0, 31) << 10));
+            WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, ReadColor(colorValue, brightness, forcedBlank: false));
             pixelColors[pixelIndex] = colorValue;
             pixelSources[pixelIndex] = (byte)(background + 1);
+
         }
+    }
+
+    private static void AccumulateBackgroundSample(
+        int worldX,
+        int worldY,
+        float weight,
+        int pixelWidth,
+        int pixelHeight,
+        int tileWidth,
+        int tileHeight,
+        int mapBase,
+        int mapWidth,
+        int characterBase,
+        int bytesPerTile,
+        int bitsPerPixel,
+        int priority,
+        int mode,
+        int background,
+        ReadOnlySpan<byte> videoRam,
+        ReadOnlySpan<byte> colorRam,
+        ref float coverage,
+        ref float red,
+        ref float green,
+        ref float blue)
+    {
+        if (weight <= 0f || !TrySampleBackgroundColor(
+            worldX,
+            worldY,
+            pixelWidth,
+            pixelHeight,
+            tileWidth,
+            tileHeight,
+            mapBase,
+            mapWidth,
+            characterBase,
+            bytesPerTile,
+            bitsPerPixel,
+            priority,
+            mode,
+            background,
+            videoRam,
+            colorRam,
+            out var sampledColor))
+        {
+            return;
+        }
+
+        coverage += weight;
+        red += (sampledColor & 0x1F) * weight;
+        green += ((sampledColor >> 5) & 0x1F) * weight;
+        blue += ((sampledColor >> 10) & 0x1F) * weight;
+    }
+
+    private static bool TrySampleBackgroundColor(
+        int worldX,
+        int worldY,
+        int pixelWidth,
+        int pixelHeight,
+        int tileWidth,
+        int tileHeight,
+        int mapBase,
+        int mapWidth,
+        int characterBase,
+        int bytesPerTile,
+        int bitsPerPixel,
+        int priority,
+        int mode,
+        int background,
+        ReadOnlySpan<byte> videoRam,
+        ReadOnlySpan<byte> colorRam,
+        out ushort colorValue)
+    {
+        worldX %= pixelWidth;
+        worldY %= pixelHeight;
+        if (worldX < 0)
+        {
+            worldX += pixelWidth;
+        }
+
+        if (worldY < 0)
+        {
+            worldY += pixelHeight;
+        }
+
+        var cellX = worldX / tileWidth;
+        var cellY = worldY / tileHeight;
+        var localX = worldX % tileWidth;
+        var localY = worldY % tileHeight;
+        var mapIndex = GetMapByteIndex(mapBase, mapWidth, cellX, cellY);
+        var tileEntry = (ushort)(videoRam[mapIndex] | (videoRam[mapIndex + 1] << 8));
+        if (priority >= 0 && ((tileEntry & 0x2000) != 0) != (priority != 0))
+        {
+            colorValue = 0;
+            return false;
+        }
+
+        if ((tileEntry & 0x4000) != 0)
+        {
+            localX = tileWidth - 1 - localX;
+        }
+
+        if ((tileEntry & 0x8000) != 0)
+        {
+            localY = tileHeight - 1 - localY;
+        }
+
+        var tileNumber = tileEntry & 0x03FF;
+        if (tileWidth == 16)
+        {
+            tileNumber += ((localY / 8) * 16) + (localX / 8);
+            localX &= 7;
+            localY &= 7;
+        }
+
+        var tileAddress = (characterBase + (tileNumber * bytesPerTile)) & 0xFFFF;
+        var paletteIndex = ReadTilePixel(videoRam, tileAddress, bitsPerPixel, localX, localY);
+        if (paletteIndex == 0)
+        {
+            colorValue = 0;
+            return false;
+        }
+
+        var paletteGroup = (tileEntry >> 10) & 0x07;
+        var modeZeroPaletteBase = mode == 0 ? background * 32 : 0;
+        var colorIndex = modeZeroPaletteBase + (paletteGroup * (1 << bitsPerPixel)) + paletteIndex;
+        colorValue = ReadColorValue(colorRam, colorIndex);
+        return true;
     }
 
     private static int GetMapByteIndex(int mapBase, int mapWidth, int cellX, int cellY)
