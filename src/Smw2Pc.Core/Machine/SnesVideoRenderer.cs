@@ -233,7 +233,7 @@ public static class SnesVideoRenderer
         var mode = registers[0x05] & 0x07;
         if (mode == 7)
         {
-        DrawModeSevenLayers(hardware, hardwareScanline, registers, screenEnable, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+            DrawModeSevenLayers(hardware, hardwareScanline, registers, screenEnable, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
         }
         else if (mode == 1)
         {
