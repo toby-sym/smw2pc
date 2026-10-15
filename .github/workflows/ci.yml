@@ -44,4 +44,4 @@ jobs:
         if: github.event_name != 'pull_request' && github.ref_type == 'branch' && github.ref != 'refs/heads/main'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "style: apply dotnet format"
+          commit_message: "Apply .NET formatting"
