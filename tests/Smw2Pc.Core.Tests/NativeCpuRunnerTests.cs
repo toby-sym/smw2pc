@@ -123,6 +123,147 @@ public sealed class NativeCpuRunnerTests
     }
 
     [TestMethod]
+    public void ArithmeticInstructionsUpdateCarryOverflowAndNegativeFlags()
+    {
+        using var romFile = TemporaryRomFile.Create(CreateRomImage([0xA9, 0x7F, 0x18, 0x69, 0x01, 0xDB]));
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+
+        runner.Run(8);
+
+        Assert.AreEqual((ushort)0x80, runner.State.Accumulator);
+        Assert.AreNotEqual(0, runner.State.Status & CpuStatusFlags.Negative);
+        Assert.AreNotEqual(0, runner.State.Status & CpuStatusFlags.Overflow);
+        Assert.AreEqual(0, runner.State.Status & CpuStatusFlags.Carry);
+    }
+
+    [TestMethod]
+    public void CompareAndConditionalBranchSkipTheUnmatchedPath()
+    {
+        using var romFile = TemporaryRomFile.Create(
+            CreateRomImage([0xA9, 0x05, 0xC9, 0x05, 0xF0, 0x02, 0xA9, 0x99, 0xDB]));
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+
+        var instructionsExecuted = runner.Run(8);
+
+        Assert.AreEqual(4, instructionsExecuted);
+        Assert.AreEqual((ushort)0x05, runner.State.Accumulator);
+        Assert.AreNotEqual(0, runner.State.Status & CpuStatusFlags.Zero);
+        Assert.AreEqual((ushort)0x8009, runner.State.ProgramCounter);
+    }
+
+    [TestMethod]
+    public void DirectPageAndIndexedAbsoluteInstructionsUseCurrentRegisters()
+    {
+        using var romFile = TemporaryRomFile.Create(
+            CreateRomImage([0xA5, 0x02, 0x69, 0x04, 0x9D, 0x00, 0x00, 0xDB]));
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        memoryBus.WriteByte(0x000002, 0x03);
+        var runner = new NativeCpuRunner(memoryBus);
+        runner.State.X = 2;
+
+        runner.Run(8);
+
+        Assert.AreEqual((ushort)0x07, runner.State.Accumulator);
+        Assert.AreEqual((byte)0x07, memoryBus.ReadByte(0x000002));
+    }
+
+    [TestMethod]
+    public void RepAndSepEndBlocksBeforeImmediateWidthChanges()
+    {
+        using var romFile = TemporaryRomFile.Create(
+            CreateRomImage([0xC2, 0x20, 0xA9, 0x34, 0x12, 0xE2, 0x20, 0xA9, 0x56, 0xDB]));
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+        runner.State.EmulationMode = false;
+
+        runner.Run(8);
+
+        Assert.AreEqual((ushort)0x1256, runner.State.Accumulator);
+        Assert.IsTrue(runner.State.IsAccumulator8Bit);
+        Assert.AreEqual(3, runner.CachedBlockCount);
+        Assert.IsTrue(runner.State.Halted);
+    }
+
+    [TestMethod]
+    public void DecimalAddSetsZeroAndCarryForBcdOverflow()
+    {
+        using var romFile = TemporaryRomFile.Create(
+            CreateRomImage([0xF8, 0xA9, 0x99, 0x18, 0x69, 0x01, 0xDB]));
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+
+        runner.Run(8);
+
+        Assert.AreEqual((ushort)0, runner.State.Accumulator);
+        Assert.AreNotEqual(0, runner.State.Status & CpuStatusFlags.Carry);
+        Assert.AreNotEqual(0, runner.State.Status & CpuStatusFlags.Zero);
+    }
+
+    [TestMethod]
+    public void PushAndPullAccumulatorRoundTripAndRestoreStackPointer()
+    {
+        using var romFile = TemporaryRomFile.Create(
+            CreateRomImage([0xA9, 0x34, 0x48, 0xA9, 0x00, 0x68, 0xDB]));
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+
+        runner.Run(8);
+
+        Assert.AreEqual((ushort)0x34, runner.State.Accumulator);
+        Assert.AreEqual((ushort)0x01FF, runner.State.StackPointer);
+        Assert.AreEqual((byte)0x34, memoryBus.ReadByte(0x0001FF));
+    }
+
+    [TestMethod]
+    public void DecimalSubtractBorrowsAndPreservesBcdResult()
+    {
+        using var romFile = TemporaryRomFile.Create(
+            CreateRomImage([0xF8, 0xA9, 0x00, 0x38, 0xE9, 0x01, 0xDB]));
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+
+        runner.Run(8);
+
+        Assert.AreEqual((ushort)0x99, runner.State.Accumulator);
+        Assert.AreEqual(0, runner.State.Status & CpuStatusFlags.Carry);
+        Assert.AreNotEqual(0, runner.State.Status & CpuStatusFlags.Negative);
+    }
+
+    [TestMethod]
+    public void SubroutineCallAndReturnRestoreTheStackAndResumeAfterCall()
+    {
+        using var romFile = TemporaryRomFile.Create(
+            CreateRomImage([0x20, 0x06, 0x80, 0xDB, 0xEA, 0xEA, 0xA9, 0x77, 0x60]));
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+
+        runner.Run(8);
+
+        Assert.AreEqual((ushort)0x77, runner.State.Accumulator);
+        Assert.AreEqual((ushort)0x01FF, runner.State.StackPointer);
+        Assert.AreEqual((ushort)0x8004, runner.State.ProgramCounter);
+        Assert.IsTrue(runner.State.Halted);
+    }
+
+    [TestMethod]
+    public void ExchangeCarryAndEmulationSwitchesToNativeWidthModes()
+    {
+        using var romFile = TemporaryRomFile.Create(
+            CreateRomImage([0x18, 0xFB, 0xC2, 0x30, 0xA9, 0x34, 0x12, 0xDB]));
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+
+        runner.Run(8);
+
+        Assert.IsFalse(runner.State.EmulationMode);
+        Assert.IsFalse(runner.State.IsAccumulator8Bit);
+        Assert.IsFalse(runner.State.AreIndexes8Bit);
+        Assert.AreEqual((ushort)0x1234, runner.State.Accumulator);
+    }
+
+    [TestMethod]
     public void TranslatorRejectsUnsupportedOpcodesClearly()
     {
         using var romFile = TemporaryRomFile.Create(CreateRomImage([0x00]));

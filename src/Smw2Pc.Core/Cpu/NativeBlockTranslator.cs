@@ -6,17 +6,17 @@ namespace Smw2Pc.Core.Cpu;
 
 public sealed class NativeBlockTranslator
 {
-    private static readonly FieldInfo AccumulatorField = GetField(nameof(CpuState.Accumulator));
-    private static readonly FieldInfo XField = GetField(nameof(CpuState.X));
-    private static readonly FieldInfo YField = GetField(nameof(CpuState.Y));
-    private static readonly FieldInfo DataBankField = GetField(nameof(CpuState.DataBank));
-    private static readonly FieldInfo ProgramCounterField = GetField(nameof(CpuState.ProgramCounter));
-    private static readonly FieldInfo HaltedField = GetField(nameof(CpuState.Halted));
-    private static readonly MethodInfo WriteByteMethod = typeof(SnesMemoryBus).GetMethod(nameof(SnesMemoryBus.WriteByte))!;
-    private static readonly MethodInfo SetNegativeZero8Method = typeof(CpuState).GetMethod(nameof(CpuState.SetNegativeZero8))!;
-    private static readonly MethodInfo SetNegativeZero16Method = typeof(CpuState).GetMethod(nameof(CpuState.SetNegativeZero16))!;
+    private const int DefaultMaximumInstructions = 32;
 
-    public NativeCpuBlock Translate(SnesMemoryBus memoryBus, CpuState state, int maximumInstructions = 32)
+    private static readonly MethodInfo ExecuteInstructionMethod = typeof(CpuInstructionExecutor).GetMethod(
+        nameof(CpuInstructionExecutor.Execute),
+        BindingFlags.Static | BindingFlags.Public)!;
+    private static readonly FieldInfo ProgramCounterField = GetField(nameof(CpuState.ProgramCounter));
+
+    public NativeCpuBlock Translate(
+        SnesMemoryBus memoryBus,
+        CpuState state,
+        int maximumInstructions = DefaultMaximumInstructions)
     {
         ArgumentNullException.ThrowIfNull(memoryBus);
         ArgumentNullException.ThrowIfNull(state);
@@ -30,7 +30,7 @@ public sealed class NativeBlockTranslator
         var startAddress = ComposeAddress(state.ProgramBank, state.ProgramCounter);
         if (!memoryBus.IsCartridgeRomAddress(startAddress))
         {
-            throw new NotSupportedException("This first native translator pass only translates code mapped from cartridge ROM.");
+            throw new NotSupportedException("This native translator pass only translates code mapped from cartridge ROM.");
         }
 
         var method = new DynamicMethod(
@@ -50,183 +50,48 @@ public sealed class NativeBlockTranslator
             var opcode = ReadProgramByte(memoryBus, state.ProgramBank, ref programCounter);
             instructionCount++;
 
-            switch (opcode)
+            if (!CpuInstructionSet.TryGetDefinition(opcode, out var definition))
             {
-                case 0xEA: // NOP
-                    break;
-                case 0xA9: // LDA immediate
-                    EmitLoadImmediate(
-                        il,
-                        AccumulatorField,
-                        ReadImmediate(memoryBus, state.ProgramBank, ref programCounter, state.IsAccumulator8Bit),
-                        state.IsAccumulator8Bit,
-                        preserveHighByte: state.IsAccumulator8Bit,
-                        SetNegativeZero8Method,
-                        SetNegativeZero16Method);
-                    break;
-                case 0xA2: // LDX immediate
-                    EmitLoadImmediate(
-                        il,
-                        XField,
-                        ReadImmediate(memoryBus, state.ProgramBank, ref programCounter, state.AreIndexes8Bit),
-                        state.AreIndexes8Bit,
-                        preserveHighByte: false,
-                        SetNegativeZero8Method,
-                        SetNegativeZero16Method);
-                    break;
-                case 0xA0: // LDY immediate
-                    EmitLoadImmediate(
-                        il,
-                        YField,
-                        ReadImmediate(memoryBus, state.ProgramBank, ref programCounter, state.AreIndexes8Bit),
-                        state.AreIndexes8Bit,
-                        preserveHighByte: false,
-                        SetNegativeZero8Method,
-                        SetNegativeZero16Method);
-                    break;
-                case 0x8D: // STA absolute
-                    EmitStoreAbsolute(
-                        il,
-                        ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter),
-                        AccumulatorField,
-                        state.IsAccumulator8Bit);
-                    break;
-                case 0x9C: // STZ absolute
-                    EmitStoreZeroAbsolute(
-                        il,
-                        ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter),
-                        state.IsAccumulator8Bit);
-                    break;
-                case 0x80: // BRA relative
-                    var displacement = (sbyte)ReadProgramByte(memoryBus, state.ProgramBank, ref programCounter);
-                    programCounter = unchecked((ushort)(programCounter + displacement));
-                    EmitSetProgramCounter(il, programCounter);
-                    il.Emit(OpCodes.Ret);
-                    terminatesBlock = true;
-                    break;
-                case 0x4C: // JMP absolute
-                    programCounter = ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter);
-                    EmitSetProgramCounter(il, programCounter);
-                    il.Emit(OpCodes.Ret);
-                    terminatesBlock = true;
-                    break;
-                case 0xDB: // STP
-                    EmitSetProgramCounter(il, programCounter);
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldc_I4_1);
-                    il.Emit(OpCodes.Stfld, HaltedField);
-                    il.Emit(OpCodes.Ret);
-                    terminatesBlock = true;
-                    break;
-                default:
-                    throw new NotSupportedException(
-                        $"Opcode 0x{opcode:X2} at 0x{instructionAddress:X6} is not supported by the native translator yet.");
+                throw new NotSupportedException(
+                    $"Opcode 0x{opcode:X2} at 0x{instructionAddress:X6} is not supported by the native translator yet.");
+            }
+
+            var operand = ReadOperand(memoryBus, state, definition.AddressingMode, ref programCounter);
+            EmitInstruction(il, definition, operand, programCounter);
+            terminatesBlock = EndsBlock(definition.Operation);
+
+            if (terminatesBlock && definition.Operation is CpuOperation.ResetStatusBits
+                or CpuOperation.SetStatusBits
+                or CpuOperation.PullStatus
+                or CpuOperation.ExchangeCarryAndEmulation)
+            {
+                EmitSetProgramCounter(il, programCounter);
             }
         }
 
         if (!terminatesBlock)
         {
             EmitSetProgramCounter(il, programCounter);
-            il.Emit(OpCodes.Ret);
         }
 
+        il.Emit(OpCodes.Ret);
         var code = (NativeCpuBlockCode)method.CreateDelegate(typeof(NativeCpuBlockCode));
         return new NativeCpuBlock(startAddress, instructionCount, code);
     }
 
-    private static void EmitLoadImmediate(
+    private static void EmitInstruction(
         ILGenerator il,
-        FieldInfo registerField,
-        ushort value,
-        bool is8Bit,
-        bool preserveHighByte,
-        MethodInfo setNegativeZero8,
-        MethodInfo setNegativeZero16)
+        CpuInstructionDefinition definition,
+        ushort operand,
+        ushort nextProgramCounter)
     {
         il.Emit(OpCodes.Ldarg_0);
-        if (is8Bit && preserveHighByte)
-        {
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, registerField);
-            il.Emit(OpCodes.Ldc_I4, 0xFF00);
-            il.Emit(OpCodes.And);
-        }
-
-        il.Emit(OpCodes.Ldc_I4, is8Bit ? value & 0xFF : value);
-        if (is8Bit && preserveHighByte)
-        {
-            il.Emit(OpCodes.Or);
-        }
-
-        il.Emit(OpCodes.Conv_U2);
-        il.Emit(OpCodes.Stfld, registerField);
-
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldc_I4, is8Bit ? value & 0xFF : value);
-        if (is8Bit)
-        {
-            il.Emit(OpCodes.Conv_U1);
-            il.Emit(OpCodes.Callvirt, setNegativeZero8);
-        }
-        else
-        {
-            il.Emit(OpCodes.Conv_U2);
-            il.Emit(OpCodes.Callvirt, setNegativeZero16);
-        }
-    }
-
-    private static void EmitStoreAbsolute(ILGenerator il, ushort address, FieldInfo sourceRegister, bool is8Bit)
-    {
-        EmitStoreByte(il, address, sourceRegister, highByte: false);
-        if (!is8Bit)
-        {
-            EmitStoreByte(il, unchecked((ushort)(address + 1)), sourceRegister, highByte: true);
-        }
-    }
-
-    private static void EmitStoreZeroAbsolute(ILGenerator il, ushort address, bool is8Bit)
-    {
-        EmitStoreZeroByte(il, address);
-        if (!is8Bit)
-        {
-            EmitStoreZeroByte(il, unchecked((ushort)(address + 1)));
-        }
-    }
-
-    private static void EmitStoreByte(ILGenerator il, ushort address, FieldInfo sourceRegister, bool highByte)
-    {
         il.Emit(OpCodes.Ldarg_1);
-        EmitDataBankAddress(il, address);
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, sourceRegister);
-        if (highByte)
-        {
-            il.Emit(OpCodes.Ldc_I4_8);
-            il.Emit(OpCodes.Shr_Un);
-        }
-
-        il.Emit(OpCodes.Conv_U1);
-        il.Emit(OpCodes.Callvirt, WriteByteMethod);
-    }
-
-    private static void EmitStoreZeroByte(ILGenerator il, ushort address)
-    {
-        il.Emit(OpCodes.Ldarg_1);
-        EmitDataBankAddress(il, address);
-        il.Emit(OpCodes.Ldc_I4_0);
-        il.Emit(OpCodes.Conv_U1);
-        il.Emit(OpCodes.Callvirt, WriteByteMethod);
-    }
-
-    private static void EmitDataBankAddress(ILGenerator il, ushort address)
-    {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, DataBankField);
-        il.Emit(OpCodes.Ldc_I4, 16);
-        il.Emit(OpCodes.Shl);
-        il.Emit(OpCodes.Ldc_I4, address);
-        il.Emit(OpCodes.Or);
-        il.Emit(OpCodes.Conv_U4);
+        il.Emit(OpCodes.Ldc_I4, (int)definition.Operation);
+        il.Emit(OpCodes.Ldc_I4, (int)definition.AddressingMode);
+        il.Emit(OpCodes.Ldc_I4, operand);
+        il.Emit(OpCodes.Ldc_I4, nextProgramCounter);
+        il.Emit(OpCodes.Call, ExecuteInstructionMethod);
     }
 
     private static void EmitSetProgramCounter(ILGenerator il, ushort programCounter)
@@ -237,17 +102,35 @@ public sealed class NativeBlockTranslator
         il.Emit(OpCodes.Stfld, ProgramCounterField);
     }
 
-    private static byte ReadProgramByte(SnesMemoryBus memoryBus, byte programBank, ref ushort programCounter)
+    private static ushort ReadOperand(
+        SnesMemoryBus memoryBus,
+        CpuState state,
+        CpuAddressingMode addressingMode,
+        ref ushort programCounter)
     {
-        var address = ComposeAddress(programBank, programCounter);
-        if (!memoryBus.IsCartridgeRomAddress(address))
+        return addressingMode switch
         {
-            throw new NotSupportedException($"Instruction data at 0x{address:X6} is not mapped from cartridge ROM.");
-        }
-
-        var value = memoryBus.ReadByte(address);
-        programCounter = unchecked((ushort)(programCounter + 1));
-        return value;
+            CpuAddressingMode.Implied or CpuAddressingMode.Accumulator => 0,
+            CpuAddressingMode.ImmediateAccumulator => ReadImmediate(
+                memoryBus,
+                state.ProgramBank,
+                ref programCounter,
+                state.IsAccumulator8Bit),
+            CpuAddressingMode.ImmediateIndex => ReadImmediate(
+                memoryBus,
+                state.ProgramBank,
+                ref programCounter,
+                state.AreIndexes8Bit),
+            CpuAddressingMode.ImmediateByte
+            or CpuAddressingMode.DirectPage
+            or CpuAddressingMode.DirectPageX
+            or CpuAddressingMode.DirectPageY
+            or CpuAddressingMode.Relative => ReadProgramByte(memoryBus, state.ProgramBank, ref programCounter),
+            CpuAddressingMode.Absolute
+            or CpuAddressingMode.AbsoluteX
+            or CpuAddressingMode.AbsoluteY => ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter),
+            _ => throw new ArgumentOutOfRangeException(nameof(addressingMode), addressingMode, "Unsupported addressing mode."),
+        };
     }
 
     private static ushort ReadImmediate(
@@ -271,6 +154,40 @@ public sealed class NativeBlockTranslator
         var low = ReadProgramByte(memoryBus, programBank, ref programCounter);
         var high = ReadProgramByte(memoryBus, programBank, ref programCounter);
         return (ushort)(low | (high << 8));
+    }
+
+    private static byte ReadProgramByte(SnesMemoryBus memoryBus, byte programBank, ref ushort programCounter)
+    {
+        var address = ComposeAddress(programBank, programCounter);
+        if (!memoryBus.IsCartridgeRomAddress(address))
+        {
+            throw new NotSupportedException($"Instruction data at 0x{address:X6} is not mapped from cartridge ROM.");
+        }
+
+        var value = memoryBus.ReadByte(address);
+        programCounter = unchecked((ushort)(programCounter + 1));
+        return value;
+    }
+
+    private static bool EndsBlock(CpuOperation operation)
+    {
+        return operation is CpuOperation.Stop
+            or CpuOperation.JumpAbsolute
+            or CpuOperation.CallAbsolute
+            or CpuOperation.ReturnFromSubroutine
+            or CpuOperation.BranchPlus
+            or CpuOperation.BranchMinus
+            or CpuOperation.BranchOverflowClear
+            or CpuOperation.BranchOverflowSet
+            or CpuOperation.BranchCarryClear
+            or CpuOperation.BranchCarrySet
+            or CpuOperation.BranchNotEqual
+            or CpuOperation.BranchEqual
+            or CpuOperation.BranchAlways
+            or CpuOperation.ResetStatusBits
+            or CpuOperation.SetStatusBits
+            or CpuOperation.PullStatus
+            or CpuOperation.ExchangeCarryAndEmulation;
     }
 
     private static uint ComposeAddress(byte bank, ushort offset)
