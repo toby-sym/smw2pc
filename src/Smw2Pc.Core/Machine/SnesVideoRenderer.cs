@@ -152,10 +152,10 @@ public static class SnesVideoRenderer
                 var fractionX = sampleX - x0;
                 var fractionY = sampleY - y0;
                 var outputOffset = pixel * BytesPerPixel;
-                var topLeft = GetMatchingSampleOffset(x0, y0, source, pixelSources, outputOffset);
-                var topRight = GetMatchingSampleOffset(x1, y0, source, pixelSources, outputOffset);
-                var bottomLeft = GetMatchingSampleOffset(x0, y1, source, pixelSources, outputOffset);
-                var bottomRight = GetMatchingSampleOffset(x1, y1, source, pixelSources, outputOffset);
+                var topLeft = GetBackgroundSampleOffset(x0, y0, pixelSources, outputOffset);
+                var topRight = GetBackgroundSampleOffset(x1, y0, pixelSources, outputOffset);
+                var bottomLeft = GetBackgroundSampleOffset(x0, y1, pixelSources, outputOffset);
+                var bottomRight = GetBackgroundSampleOffset(x1, y1, pixelSources, outputOffset);
 
                 for (var channel = 0; channel < BytesPerPixel; channel++)
                 {
@@ -176,10 +176,9 @@ public static class SnesVideoRenderer
         }
     }
 
-    private static int GetMatchingSampleOffset(
+    private static int GetBackgroundSampleOffset(
         int x,
         int y,
-        byte source,
         ReadOnlySpan<byte> pixelSources,
         int fallbackOffset)
     {
@@ -189,7 +188,10 @@ public static class SnesVideoRenderer
         }
 
         var pixel = (y * Width) + x;
-        return pixelSources[pixel] == source ? pixel * BytesPerPixel : fallbackOffset;
+        // The sample is already inside the background image. Allow it to cross between
+        // visible background layers so their shared edges move continuously. Object
+        // pixels remain fixed at the current frame to avoid smearing sprites.
+        return pixelSources[pixel] <= 4 ? pixel * BytesPerPixel : fallbackOffset;
     }
 
     private static float Lerp(float start, float end, float amount)
