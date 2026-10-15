@@ -88,19 +88,21 @@ internal static class CpuInstructionExecutor
 
                 return;
             case CpuOperation.Break:
-                EnterSoftwareInterrupt(state, memoryBus, nextProgramCounter, state.EmulationMode ? 0xFFFEu : 0xFFE6u);
+                EnterSoftwareInterrupt(state, memoryBus, nextProgramCounter, state.EmulationMode ? 0xFFFEu : 0xFFE6u, isBreak: true);
                 return;
             case CpuOperation.Cop:
-                EnterSoftwareInterrupt(state, memoryBus, nextProgramCounter, state.EmulationMode ? 0xFFF4u : 0xFFE4u);
+                EnterSoftwareInterrupt(state, memoryBus, nextProgramCounter, state.EmulationMode ? 0xFFF4u : 0xFFE4u, isBreak: false);
                 return;
             case CpuOperation.BranchLong:
                 state.ProgramCounter = unchecked((ushort)(nextProgramCounter + (short)operand));
                 return;
             case CpuOperation.BlockMoveNegative:
                 MoveBlock(state, memoryBus, operand, increment: false);
+                state.ProgramCounter = nextProgramCounter;
                 return;
             case CpuOperation.BlockMovePositive:
                 MoveBlock(state, memoryBus, operand, increment: true);
+                state.ProgramCounter = nextProgramCounter;
                 return;
             case CpuOperation.BranchPlus:
             case CpuOperation.BranchMinus:
@@ -535,7 +537,8 @@ internal static class CpuInstructionExecutor
         CpuState state,
         SnesMemoryBus memoryBus,
         ushort nextProgramCounter,
-        uint vector)
+        uint vector,
+        bool isBreak)
     {
         if (!state.EmulationMode)
         {
@@ -544,7 +547,10 @@ internal static class CpuInstructionExecutor
 
         PushByte(state, memoryBus, (byte)(nextProgramCounter >> 8));
         PushByte(state, memoryBus, (byte)nextProgramCounter);
-        PushByte(state, memoryBus, state.Status);
+        var status = state.EmulationMode
+            ? (byte)((state.Status & 0xEF) | (isBreak ? 0x10 : 0))
+            : state.Status;
+        PushByte(state, memoryBus, status);
         state.Status |= CpuStatusFlags.InterruptDisable;
         state.Status &= unchecked((byte)~CpuStatusFlags.Decimal);
         state.ProgramBank = 0;
@@ -916,6 +922,18 @@ internal static class CpuInstructionExecutor
     private static void SetFlag(CpuState state, byte flag)
     {
         state.Status |= flag;
+    }
+
+    private static void SetFlag(CpuState state, byte flag, bool value)
+    {
+        if (value)
+        {
+            SetFlag(state, flag);
+        }
+        else
+        {
+            ClearFlag(state, flag);
+        }
     }
 
     private static void ClearFlag(CpuState state, byte flag)

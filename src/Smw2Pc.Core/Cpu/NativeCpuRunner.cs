@@ -27,6 +27,18 @@ public sealed class NativeCpuRunner
         var instructionsExecuted = 0;
         while (instructionsExecuted < instructionBudget && !State.Halted)
         {
+            if (State.WaitingForInterrupt)
+            {
+                MemoryBus.Hardware.AdvanceCpuInstructions(1);
+                instructionsExecuted++;
+                if (MemoryBus.Hardware.ConsumeNmiRequest())
+                {
+                    EnterNmi();
+                }
+
+                continue;
+            }
+
             var blockSize = Math.Min(MaximumBlockSize, instructionBudget - instructionsExecuted);
             var block = GetOrTranslateBlock(blockSize);
             block.Execute(State, MemoryBus);
@@ -67,6 +79,8 @@ public sealed class NativeCpuRunner
 
     private void EnterNmi()
     {
+        State.WaitingForInterrupt = false;
+
         if (!State.EmulationMode)
         {
             PushByte(State.ProgramBank);

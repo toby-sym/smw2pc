@@ -27,6 +27,7 @@ public sealed class CpuState
     public byte Status;
     public bool EmulationMode;
     public bool Halted;
+    public bool WaitingForInterrupt;
 
     public bool IsAccumulator8Bit => EmulationMode || (Status & CpuStatusFlags.Accumulator8Bit) != 0;
 
