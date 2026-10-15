@@ -61,13 +61,13 @@ public sealed class SnesHardwareTests
     }
 
     [TestMethod]
-    public void ApuPortsMirrorAndUnmappedReadsReturnOpenBus()
+    public void ApuPortDirectionsAreIndependentAndUnmappedReadsReturnOpenBus()
     {
         using var romFile = TemporaryRomFile.Create(CreateRomImage());
         var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
 
         memoryBus.WriteByte(0x002142, 0x6B);
-        Assert.AreEqual((byte)0x6B, memoryBus.ReadByte(0x00217E));
+        Assert.AreEqual((byte)0, memoryBus.ReadByte(0x00217E));
 
         memoryBus.WriteByte(0x7E0000, 0xA5);
         Assert.AreEqual((byte)0xA5, memoryBus.ReadByte(0x002120));

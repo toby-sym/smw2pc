@@ -1,3 +1,5 @@
+using Smw2Pc.Core.Audio;
+
 namespace Smw2Pc.Core.Machine;
 
 public sealed class SnesHardware
@@ -5,18 +7,18 @@ public sealed class SnesHardware
     private const int WorkRamSize = 0x20000;
     private const int VideoRamSize = 0x10000;
     private const int ControllerCount = 2;
-    private const int InstructionsPerFrame = 18000;
+    internal const int InstructionsPerFrame = 18000;
     private const int Mode7ParameterCount = 8;
     private const int BackgroundOffsetCount = 8;
     private readonly int scanlinesPerFrame;
     private readonly int vBlankStartInstruction;
+    private readonly double frameRateHz;
 
     private readonly byte[] workRam = new byte[WorkRamSize];
     private readonly byte[] videoRam = new byte[VideoRamSize];
     private readonly byte[] colorRam = new byte[0x200];
     private readonly byte[] objectAttributeMemory = new byte[544];
     private readonly byte[] ppuRegisters = new byte[0x40];
-    private readonly byte[] apuPorts = new byte[4];
     private readonly byte[] cpuRegisters = new byte[0x0E];
     private readonly byte[] dmaRegisters = new byte[0x80];
     private readonly ushort[] hdmaTableAddresses = new ushort[8];
@@ -35,7 +37,6 @@ public sealed class SnesHardware
     private readonly SnesControllerButtons[] controllerButtons = new SnesControllerButtons[ControllerCount];
     private readonly ushort[] controllerShiftRegisters = new ushort[ControllerCount];
     private readonly int[] controllerShiftPositions = new int[ControllerCount];
-    private int apuHandshakeInstructionsRemaining = 256;
     private int frameInstructionPosition;
     private int currentScanline;
     private uint workRamPortAddress;
@@ -61,6 +62,8 @@ public sealed class SnesHardware
     public SnesHardware(bool palRegion = false)
     {
         scanlinesPerFrame = palRegion ? 312 : 262;
+        frameRateHz = palRegion ? 50.00697 : 60.0988;
+        Apu = new SnesApu();
         vBlankStartInstruction = InstructionsPerFrame * 225 / scanlinesPerFrame;
         cpuRegisters[0x02] = byte.MaxValue;
         cpuRegisters[0x04] = byte.MaxValue;
@@ -74,6 +77,8 @@ public sealed class SnesHardware
             CapturePpuScanline(scanline);
         }
     }
+
+    public SnesApu Apu { get; }
 
     public ReadOnlyMemory<byte> VideoRam => videoRam;
 
@@ -141,17 +146,7 @@ public sealed class SnesHardware
             return;
         }
 
-        if (apuHandshakeInstructionsRemaining > 0)
-        {
-            apuHandshakeInstructionsRemaining -= instructionCount;
-            if (apuHandshakeInstructionsRemaining <= 0)
-            {
-                // The SPC700 boot ROM signals readiness with this two-byte handshake.
-                // Audio execution remains out of scope for this silent startup stub.
-                apuPorts[0] = 0xAA;
-                apuPorts[1] = 0xBB;
-            }
-        }
+        Apu.AdvanceMainCpuInstructions(instructionCount, frameRateHz, InstructionsPerFrame);
 
         var instructionsRemaining = instructionCount;
         while (instructionsRemaining > 0)
@@ -412,7 +407,7 @@ public sealed class SnesHardware
 
         if (address is >= 0x2140 and <= 0x217F)
         {
-            value = apuPorts[(address - 0x2140) & 0x03];
+            value = Apu.ReadCpuPort((address - 0x2140) & 0x03);
             return true;
         }
 
@@ -490,8 +485,7 @@ public sealed class SnesHardware
 
         if (address is >= 0x2140 and <= 0x217F)
         {
-            apuPorts[(address - 0x2140) & 0x03] = value;
-            apuHandshakeInstructionsRemaining = 256;
+            Apu.WriteCpuPort((address - 0x2140) & 0x03, value);
             return true;
         }
 
