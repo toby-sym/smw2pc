@@ -6,6 +6,8 @@ public sealed class SnesHardware
     private const int VideoRamSize = 0x10000;
     private const int ControllerCount = 2;
     private const int InstructionsPerFrame = 18000;
+    private const int Mode7ParameterCount = 8;
+    private const int BackgroundOffsetCount = 8;
     private readonly int scanlinesPerFrame;
     private readonly int vBlankStartInstruction;
 
@@ -25,9 +27,11 @@ public sealed class SnesHardware
     private readonly bool[] hdmaTransferThisLine = new bool[8];
     private readonly byte[] ppuRegistersByScanline;
     private readonly ushort[] fixedColorsByScanline;
+    private readonly ushort[] mode7Parameters = new ushort[Mode7ParameterCount];
+    private readonly ushort[] mode7ParametersByScanline;
+    private readonly ushort[] backgroundOffsetsByScanline;
     private readonly ushort[] backgroundHorizontalOffsets = new ushort[4];
     private readonly ushort[] backgroundVerticalOffsets = new ushort[4];
-    private readonly byte[] backgroundScrollLatches = new byte[8];
     private readonly SnesControllerButtons[] controllerButtons = new SnesControllerButtons[ControllerCount];
     private readonly ushort[] controllerShiftRegisters = new ushort[ControllerCount];
     private readonly int[] controllerShiftPositions = new int[ControllerCount];
@@ -39,6 +43,7 @@ public sealed class SnesHardware
     private ushort objectAttributeWordAddress;
     private byte colorRamAddress;
     private byte colorRamLowByte;
+    private byte mode7WriteLatch;
     private byte fixedRed;
     private byte fixedGreen;
     private byte fixedBlue;
@@ -46,7 +51,7 @@ public sealed class SnesHardware
     private ushort multiplyOrRemainderResult;
     private bool colorRamHighByte;
     private bool objectAttributeHighByte;
-    private bool backgroundScrollHighByte;
+    private byte backgroundOffsetLatch;
     private bool controllerStrobe;
     private bool inVBlank;
     private bool hdmaFrameStarted;
@@ -62,6 +67,8 @@ public sealed class SnesHardware
         cpuRegisters[0x05] = byte.MaxValue;
         ppuRegistersByScanline = new byte[scanlinesPerFrame * ppuRegisters.Length];
         fixedColorsByScanline = new ushort[scanlinesPerFrame];
+        mode7ParametersByScanline = new ushort[scanlinesPerFrame * Mode7ParameterCount];
+        backgroundOffsetsByScanline = new ushort[scanlinesPerFrame * BackgroundOffsetCount];
         for (var scanline = 0; scanline < scanlinesPerFrame; scanline++)
         {
             CapturePpuScanline(scanline);
@@ -90,6 +97,26 @@ public sealed class SnesHardware
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(scanline, scanlinesPerFrame);
         ArgumentOutOfRangeException.ThrowIfNegative(scanline);
         return fixedColorsByScanline[scanline];
+    }
+
+    public ReadOnlyMemory<ushort> GetMode7ParametersForScanline(int scanline)
+    {
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(scanline, scanlinesPerFrame);
+        ArgumentOutOfRangeException.ThrowIfNegative(scanline);
+        return new ReadOnlyMemory<ushort>(
+            mode7ParametersByScanline,
+            scanline * Mode7ParameterCount,
+            Mode7ParameterCount);
+    }
+
+    public ReadOnlyMemory<ushort> GetBackgroundOffsetsForScanline(int scanline)
+    {
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(scanline, scanlinesPerFrame);
+        ArgumentOutOfRangeException.ThrowIfNegative(scanline);
+        return new ReadOnlyMemory<ushort>(
+            backgroundOffsetsByScanline,
+            scanline * BackgroundOffsetCount,
+            BackgroundOffsetCount);
     }
 
     public ushort GetBackgroundHorizontalOffset(int background)
@@ -317,6 +344,11 @@ public sealed class SnesHardware
     {
         ppuRegisters.CopyTo(ppuRegistersByScanline, scanline * ppuRegisters.Length);
         fixedColorsByScanline[scanline] = FixedColor;
+        mode7Parameters.CopyTo(mode7ParametersByScanline, scanline * Mode7ParameterCount);
+        backgroundHorizontalOffsets.CopyTo(backgroundOffsetsByScanline, scanline * BackgroundOffsetCount);
+        backgroundVerticalOffsets.CopyTo(
+            backgroundOffsetsByScanline,
+            (scanline * BackgroundOffsetCount) + backgroundHorizontalOffsets.Length);
     }
 
     private static byte[] GetDmaTransferPattern(int mode)
@@ -587,6 +619,11 @@ public sealed class SnesHardware
         }
 
         ppuRegisters[register] = value;
+        if (address is 0x210D or 0x210E or >= 0x211B and <= 0x2120)
+        {
+            WriteMode7Register(address, value);
+        }
+
         if (address is >= 0x210D and <= 0x2114)
         {
             WriteBackgroundScroll(address, value);
@@ -671,25 +708,41 @@ public sealed class SnesHardware
         var relative = address - 0x210D;
         var background = relative / 2;
         var isVertical = (relative & 1) != 0;
-        var latchIndex = relative;
-        if (!backgroundScrollHighByte)
+        if (isVertical)
         {
-            backgroundScrollLatches[latchIndex] = value;
+            backgroundVerticalOffsets[background] = (ushort)(((value << 8) | backgroundOffsetLatch) & 0x03FF);
         }
         else
         {
-            var offset = (ushort)(backgroundScrollLatches[latchIndex] | ((value & 0x03) << 8));
-            if (isVertical)
-            {
-                backgroundVerticalOffsets[background] = offset;
-            }
-            else
-            {
-                backgroundHorizontalOffsets[background] = offset;
-            }
+            var previousFineScroll = (backgroundHorizontalOffsets[background] >> 8) & 0x07;
+            var offset = (value << 8) | (backgroundOffsetLatch & 0xF8) | previousFineScroll;
+            backgroundHorizontalOffsets[background] = (ushort)(offset & 0x03FF);
         }
 
-        backgroundScrollHighByte = !backgroundScrollHighByte;
+        backgroundOffsetLatch = value;
+    }
+
+    private void WriteMode7Register(ushort address, byte value)
+    {
+        var parameter = address switch
+        {
+            0x211B => 0,
+            0x211C => 1,
+            0x211D => 2,
+            0x211E => 3,
+            0x211F => 4,
+            0x2120 => 5,
+            0x210D => 6,
+            0x210E => 7,
+            _ => -1,
+        };
+
+        if (parameter >= 0)
+        {
+            mode7Parameters[parameter] = (ushort)((value << 8) | mode7WriteLatch);
+        }
+
+        mode7WriteLatch = value;
     }
 
     private void IncrementVideoRamAddress(bool highByte)
