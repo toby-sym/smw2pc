@@ -55,8 +55,41 @@ internal static class Program
         SDL.SetTextureScaleMode(gameTexture, SDL.ScaleMode.Nearest);
         SDL.SetRenderVSync(renderer, 1);
 
+        var audioError = string.Empty;
+        var audioStream = IntPtr.Zero;
+        if (SDL.InitSubSystem(SDL.InitFlags.Audio))
+        {
+            var audioSpec = new SDL.AudioSpec
+            {
+                Format = SDL.AudioFormat.AudioS16LE,
+                Channels = 2,
+                Freq = 32_000,
+            };
+            audioStream = SDL.OpenAudioDeviceStream(
+                SDL.AudioDeviceDefaultPlayback,
+                in audioSpec,
+                null!,
+                IntPtr.Zero);
+            if (audioStream == IntPtr.Zero)
+            {
+                audioError = $"Audio is disabled: {SDL.GetError()}";
+            }
+            else if (!SDL.ResumeAudioStreamDevice(audioStream))
+            {
+                audioError = $"Audio is disabled: {SDL.GetError()}";
+                SDL.DestroyAudioStream(audioStream);
+                audioStream = IntPtr.Zero;
+            }
+        }
+        else
+        {
+            audioError = $"Audio is disabled: {SDL.GetError()}";
+        }
+
         var running = true;
-        var statusMessage = "Choose an .sfc/.smc ROM or a ZIP containing one ROM.";
+        var statusMessage = string.IsNullOrEmpty(audioError)
+            ? "Choose an .sfc/.smc ROM or a ZIP containing one ROM."
+            : $"Choose a ROM. {audioError}";
         SnesRom? loadedRom = null;
         NativeCpuRunner? cpuRunner = null;
         SnesControllerButtons controllerButtons = SnesControllerButtons.None;
@@ -128,11 +161,20 @@ internal static class Program
                     var memoryBus = new SnesMemoryBus(loadedRom);
                     cpuRunner = new NativeCpuRunner(memoryBus);
                     memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
+                    if (audioStream != IntPtr.Zero)
+                    {
+                        SDL.ClearAudioStream(audioStream);
+                    }
+
                     frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
                     previousTimestamp = Stopwatch.GetTimestamp();
                     elapsedSeconds = 0;
                     var regionName = loadedRom.Header.IsPalRegion ? "PAL" : "NTSC";
                     statusMessage = $"Running {loadedRom.Header.Title} at {loadedRom.Header.FrameRateHz:0.##} Hz ({regionName})";
+                    if (!string.IsNullOrEmpty(audioError))
+                    {
+                        statusMessage += $" · {audioError}";
+                    }
                 }
                 catch (Exception exception) when (
                     exception is IOException
@@ -158,6 +200,19 @@ internal static class Program
                         cpuRunner.Run(InstructionsPerFrame);
                         frameAccumulator -= frameDuration;
                         advancedFrames++;
+                    }
+
+                    var audioSamples = cpuRunner.MemoryBus.Hardware.Apu.DrainSamples();
+                    if (audioStream != IntPtr.Zero && audioSamples.Length > 0)
+                    {
+                        var audioBytes = MemoryMarshal.AsBytes(audioSamples.AsSpan()).ToArray();
+                        if (!SDL.PutAudioStreamData(audioStream, audioBytes, audioBytes.Length))
+                        {
+                            audioError = $"Audio output stopped: {SDL.GetError()}";
+                            statusMessage = audioError;
+                            SDL.DestroyAudioStream(audioStream);
+                            audioStream = IntPtr.Zero;
+                        }
                     }
 
                     if (advancedFrames > 0)
@@ -208,6 +263,11 @@ internal static class Program
             SDL.RenderDebugText(renderer, 144, 704, $"{statusMessage}   Arrows move · Z jump · X run · Enter start · F1 open");
 
             SDL.RenderPresent(renderer);
+        }
+
+        if (audioStream != IntPtr.Zero)
+        {
+            SDL.DestroyAudioStream(audioStream);
         }
 
         SDL.DestroyTexture(gameTexture);

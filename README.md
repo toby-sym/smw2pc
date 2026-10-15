@@ -25,12 +25,15 @@ all 256 opcode bytes in the [WDC W65C816S datasheet's opcode matrix](https://www
 (Table 5-4). This checks opcode coverage, while instruction behavior and timing
 still need broader validation.
 
-The current hardware path includes basic LoROM/WRAM mapping, DMA/HDMA, PPU tile,
-sprite and Mode 7 output, controller input, frame-based VBlank/NMI, and a silent
-APU startup stub. Visual differences remain, and the SPC700 audio processor is
-not emulated. PPU features, DMA timing, interrupts, and CPU cycle timing are
-still partial, so compatibility beyond the verified startup and first-level
-path is not established.
+The hardware path includes LoROM/WRAM mapping, DMA/HDMA, PPU tile, sprite and
+Mode 7 output, controller input, frame-based VBlank/NMI, and a separate SPC700
+audio subsystem. The SPC700 executes its own instruction stream while the main
+65C816 remains translated. The APU includes the boot ROM protocol, timers,
+bidirectional ports, BRR sample playback, eight DSP voices, and SDL3 stereo
+output. Audio timing and DSP interpolation are approximate; this is not a
+cycle-accurate sound chip implementation. PPU features, DMA timing, interrupts,
+and main CPU timing also remain partial, so compatibility beyond the verified
+gameplay path is not established.
 
 Run the core tests with:
 
