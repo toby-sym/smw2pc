@@ -919,20 +919,23 @@ public static class SnesVideoRenderer
         var horizontalOffset = offsets[background] % pixelWidth;
         var verticalOffset = offsets[background + 4] % pixelHeight;
         var (horizontalDelta, verticalDelta) = hardware.GetBackgroundScrollDeltaForScanline(hardwareScanline, background);
-        if (Math.Abs(horizontalDelta) > MaximumInterpolatedScrollDelta)
-        {
-            horizontalDelta = 0;
-        }
+        var (previousHorizontalDelta, previousVerticalDelta) = hardware.HasOlderPpuFrameScrollOffsets
+            ? hardware.GetPreviousBackgroundScrollDeltaForScanline(hardwareScanline, background)
+            : (0, 0);
+        var hasPreviousFrame = hardware.HasPreviousPpuFrameScrollOffsets;
 
-        if (Math.Abs(verticalDelta) > MaximumInterpolatedScrollDelta)
-        {
-            verticalDelta = 0;
-        }
-
-        // Sample each layer at its own intermediate scroll position before compositing;
-        // shifting the finished frame would mix layers that move at different speeds.
-        var sampleShiftX = -horizontalDelta * (1f - interpolationProgress);
-        var sampleShiftY = -verticalDelta * (1f - interpolationProgress);
+        // Smooth the uneven camera steps over two simulation frames, then interpolate
+        // between those filtered positions. Each background keeps its own parallax speed.
+        var sampleShiftX = GetInterpolatedScrollShift(
+            horizontalDelta,
+            previousHorizontalDelta,
+            interpolationProgress,
+            hasPreviousFrame);
+        var sampleShiftY = GetInterpolatedScrollShift(
+            verticalDelta,
+            previousVerticalDelta,
+            interpolationProgress,
+            hasPreviousFrame);
         var characterBaseRegister = registers[0x0B + background / 2];
         var characterBase = ((background & 1) == 0
             ? characterBaseRegister & 0x0F
@@ -1040,6 +1043,33 @@ public static class SnesVideoRenderer
             pixelSources[pixelIndex] = (byte)(background + 1);
 
         }
+    }
+
+    private static float GetInterpolatedScrollShift(
+        int currentDelta,
+        int previousDelta,
+        float interpolationProgress,
+        bool hasPreviousFrame)
+    {
+        if (!hasPreviousFrame)
+        {
+            return 0f;
+        }
+
+        if (Math.Abs(currentDelta) > MaximumInterpolatedScrollDelta)
+        {
+            return 0f;
+        }
+
+        if (Math.Abs(previousDelta) > MaximumInterpolatedScrollDelta)
+        {
+            previousDelta = 0;
+        }
+
+        // The average of each pair of adjacent simulation positions filters scroll
+        // bursts while keeping the filtered camera path continuous at frame boundaries.
+        return -(currentDelta * 0.5f)
+            - ((previousDelta + currentDelta) * 0.5f * (1f - interpolationProgress));
     }
 
     private static void AccumulateBackgroundSample(

@@ -65,7 +65,11 @@ internal static class Program
         }
 
         SDL.SetTextureScaleMode(gameTexture, GetScaleMode(settings));
-        SDL.SetRenderVSync(renderer, 0);
+        var verticalSyncEnabled = SDL.SetRenderVSync(renderer, 1);
+        if (!verticalSyncEnabled)
+        {
+            SDL.SetRenderVSync(renderer, 0);
+        }
 
         var audioError = string.Empty;
         var audioStream = IntPtr.Zero;
@@ -367,8 +371,12 @@ internal static class Program
                 var visibleStatus = loadedRom is not null
                     && cpuRunner is not null
                     && statusMessage.StartsWith("Running", StringComparison.Ordinal)
-                    ? $"{loadedRom.Header.Title} · sim {loadedRom.Header.FrameRateHz:0.##} Hz · render {settings.RenderFrameRate} FPS"
+                    ? $"{loadedRom.Header.Title} · sim {loadedRom.Header.FrameRateHz:0.##} Hz · cap {settings.RenderFrameRate} FPS"
                     : statusMessage;
+                if (!verticalSyncEnabled)
+                {
+                    visibleStatus += " · display sync unavailable";
+                }
                 if (!string.IsNullOrEmpty(audioError)
                     && loadedRom is not null
                     && cpuRunner is not null

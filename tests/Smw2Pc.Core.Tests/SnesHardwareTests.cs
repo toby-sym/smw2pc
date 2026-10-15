@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using Smw2Pc.Core.Cpu;
 using Smw2Pc.Core.Machine;
 using Smw2Pc.Core.Rom;
 
@@ -71,6 +72,40 @@ public sealed class SnesHardwareTests
 
         memoryBus.WriteByte(0x7E0000, 0xA5);
         Assert.AreEqual((byte)0xA5, memoryBus.ReadByte(0x002120));
+    }
+
+    [TestMethod]
+    public void BackgroundScrollHistoryRetainsTwoCompletedFrames()
+    {
+        var image = CreateRomImage();
+        for (var index = 0; index < 31; index++)
+        {
+            image[index] = 0xEA;
+        }
+
+        image[31] = 0x80;
+        image[32] = 0xDF;
+        using var romFile = TemporaryRomFile.Create(image);
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+
+        SetBackgroundHorizontalScroll(memoryBus, 8);
+        runner.Run(18_000);
+        SetBackgroundHorizontalScroll(memoryBus, 24);
+        runner.Run(18_000);
+        SetBackgroundHorizontalScroll(memoryBus, 40);
+        runner.Run(18_000);
+
+        Assert.IsTrue(memoryBus.Hardware.HasOlderPpuFrameScrollOffsets);
+        Assert.AreEqual((ushort)40, memoryBus.Hardware.GetBackgroundOffsetsForScanline(100).Span[0]);
+        Assert.AreEqual((Horizontal: 16, Vertical: 0), memoryBus.Hardware.GetBackgroundScrollDeltaForScanline(100, 0));
+        Assert.AreEqual((Horizontal: 16, Vertical: 0), memoryBus.Hardware.GetPreviousBackgroundScrollDeltaForScanline(100, 0));
+    }
+
+    private static void SetBackgroundHorizontalScroll(SnesMemoryBus memoryBus, byte offset)
+    {
+        memoryBus.WriteByte(0x00210D, offset);
+        memoryBus.WriteByte(0x00210D, 0);
     }
 
     private static void SetVideoRamAddress(SnesMemoryBus memoryBus, ushort address)
