@@ -33,7 +33,6 @@ public sealed class SnesHardware
     private readonly ushort[] mode7ParametersByScanline;
     private readonly ushort[] backgroundOffsetsByScanline;
     private readonly ushort[] previousBackgroundOffsetsByScanline;
-    private readonly ushort[] olderBackgroundOffsetsByScanline;
     private readonly ushort[] backgroundHorizontalOffsets = new ushort[4];
     private readonly ushort[] backgroundVerticalOffsets = new ushort[4];
     private readonly SnesControllerButtons[] controllerButtons = new SnesControllerButtons[ControllerCount];
@@ -60,7 +59,6 @@ public sealed class SnesHardware
     private bool hdmaFrameStarted;
     private bool hasCompletedPpuFrame;
     private bool hasPreviousPpuFrameScrollOffsets;
-    private bool hasOlderPpuFrameScrollOffsets;
     private bool nmiFlag;
     private bool nmiRequested;
 
@@ -78,7 +76,6 @@ public sealed class SnesHardware
         mode7ParametersByScanline = new ushort[scanlinesPerFrame * Mode7ParameterCount];
         backgroundOffsetsByScanline = new ushort[scanlinesPerFrame * BackgroundOffsetCount];
         previousBackgroundOffsetsByScanline = new ushort[scanlinesPerFrame * BackgroundOffsetCount];
-        olderBackgroundOffsetsByScanline = new ushort[scanlinesPerFrame * BackgroundOffsetCount];
         for (var scanline = 0; scanline < scanlinesPerFrame; scanline++)
         {
             CapturePpuScanline(scanline);
@@ -133,8 +130,6 @@ public sealed class SnesHardware
 
     public bool HasPreviousPpuFrameScrollOffsets => hasPreviousPpuFrameScrollOffsets;
 
-    public bool HasOlderPpuFrameScrollOffsets => hasOlderPpuFrameScrollOffsets;
-
     public (int Horizontal, int Vertical) GetBackgroundScrollDeltaForScanline(int scanline, int background)
     {
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(scanline, scanlinesPerFrame);
@@ -154,27 +149,6 @@ public sealed class SnesHardware
             GetWrappedScrollDelta(
                 backgroundOffsetsByScanline[offset + background + 4],
                 previousBackgroundOffsetsByScanline[offset + background + 4]));
-    }
-
-    public (int Horizontal, int Vertical) GetPreviousBackgroundScrollDeltaForScanline(int scanline, int background)
-    {
-        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(scanline, scanlinesPerFrame);
-        ArgumentOutOfRangeException.ThrowIfNegative(scanline);
-        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(background, 4);
-        ArgumentOutOfRangeException.ThrowIfNegative(background);
-        if (!hasOlderPpuFrameScrollOffsets)
-        {
-            return (0, 0);
-        }
-
-        var offset = scanline * BackgroundOffsetCount;
-        return (
-            GetWrappedScrollDelta(
-                previousBackgroundOffsetsByScanline[offset + background],
-                olderBackgroundOffsetsByScanline[offset + background]),
-            GetWrappedScrollDelta(
-                previousBackgroundOffsetsByScanline[offset + background + 4],
-                olderBackgroundOffsetsByScanline[offset + background + 4]));
     }
 
     public ushort GetBackgroundHorizontalOffset(int background)
@@ -259,12 +233,6 @@ public sealed class SnesHardware
     {
         if (hasCompletedPpuFrame)
         {
-            if (hasPreviousPpuFrameScrollOffsets)
-            {
-                previousBackgroundOffsetsByScanline.CopyTo(olderBackgroundOffsetsByScanline, 0);
-                hasOlderPpuFrameScrollOffsets = true;
-            }
-
             backgroundOffsetsByScanline.CopyTo(previousBackgroundOffsetsByScanline, 0);
             hasPreviousPpuFrameScrollOffsets = true;
         }
