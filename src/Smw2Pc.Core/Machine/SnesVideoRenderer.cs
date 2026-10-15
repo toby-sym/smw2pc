@@ -8,6 +8,7 @@ public static class SnesVideoRenderer
     public const int Height = 224;
     public const int BytesPerPixel = 4;
     private const int MaximumInterpolatedScrollDelta = 16;
+    private const int MaximumInterpolatedObjectDelta = 32;
 
     public static void RenderFrame(SnesHardware hardware, Span<byte> rgbaPixels, float interpolationProgress = 1f)
     {
@@ -248,7 +249,7 @@ public static class SnesVideoRenderer
         var mode = registers[0x05] & 0x07;
         if (mode == 7)
         {
-            DrawModeSevenLayers(hardware, hardwareScanline, registers, screenEnable, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+            DrawModeSevenLayers(hardware, hardwareScanline, registers, screenEnable, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         }
         else if (mode == 1)
         {
@@ -283,7 +284,7 @@ public static class SnesVideoRenderer
 
             if ((screenEnable & 0x10) != 0)
             {
-                DrawObjects(hardware, registers, priority: -1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+                DrawObjects(hardware, registers, priority: -1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
             }
         }
     }
@@ -606,19 +607,19 @@ public static class SnesVideoRenderer
         var hardwareScanline = screenY + 1;
         var bg3HighPriority = (registers[0x05] & 0x08) != 0;
         DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 2, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
-        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         if (!bg3HighPriority)
         {
             DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 2, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         }
 
-        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 1, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 0, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
-        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 2, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 2, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 1, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 0, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
-        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 3, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 3, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         if (bg3HighPriority)
         {
             DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 2, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
@@ -637,13 +638,14 @@ public static class SnesVideoRenderer
         Span<byte> pixelSources,
         Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam)
+        ReadOnlySpan<byte> colorRam,
+        float interpolationProgress)
     {
         if ((screenEnable & 0x10) != 0)
         {
-            DrawObjects(hardware, registers, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
-            DrawObjects(hardware, registers, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
-            DrawObjects(hardware, registers, priority: 2, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+            DrawObjects(hardware, registers, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
+            DrawObjects(hardware, registers, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
+            DrawObjects(hardware, registers, priority: 2, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         }
 
         if ((screenEnable & 0x01) != 0)
@@ -653,7 +655,7 @@ public static class SnesVideoRenderer
 
         if ((screenEnable & 0x10) != 0)
         {
-            DrawObjects(hardware, registers, priority: 3, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+            DrawObjects(hardware, registers, priority: 3, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         }
     }
 
@@ -782,11 +784,12 @@ public static class SnesVideoRenderer
         Span<byte> pixelSources,
         Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam)
+        ReadOnlySpan<byte> colorRam,
+        float interpolationProgress)
     {
         if ((screenEnable & 0x10) != 0)
         {
-            DrawObjects(hardware, registers, priority, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+            DrawObjects(hardware, registers, priority, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         }
     }
 
@@ -801,9 +804,12 @@ public static class SnesVideoRenderer
         Span<byte> pixelSources,
         Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam)
+        ReadOnlySpan<byte> colorRam,
+        float interpolationProgress)
     {
-        var objectRam = hardware.ObjectAttributeMemory.Span;
+        var objectRam = hardware.CurrentFrameObjectAttributeMemory.Span;
+        var previousObjectRam = hardware.PreviousObjectAttributeMemory.Span;
+        var hasPreviousObjectFrame = hardware.HasPreviousObjectAttributeFrame;
         var objectSizeMode = (registers[1] >> 5) & 0x07;
         var tileBase = (registers[1] & 0x07) * 0x4000;
         var tileNameSelectOffset = (((registers[1] >> 3) & 0x03) + 1) * 0x2000;
@@ -812,8 +818,10 @@ public static class SnesVideoRenderer
         for (var objectIndex = 127; objectIndex >= 0; objectIndex--)
         {
             var objectAddress = objectIndex * 4;
-            var x = (int)objectRam[objectAddress];
-            var y = objectRam[objectAddress + 1];
+            var currentHighBits = (objectRam[512 + (objectIndex / 4)] >> ((objectIndex & 3) * 2)) & 0x03;
+            var currentXRaw = objectRam[objectAddress] | ((currentHighBits & 1) << 8);
+            var x = (float)(currentXRaw >= 256 ? currentXRaw - 512 : currentXRaw);
+            var y = (float)objectRam[objectAddress + 1];
             var tile = objectRam[objectAddress + 2];
             var attributes = objectRam[objectAddress + 3];
             if (priority >= 0 && ((attributes >> 4) & 0x03) != priority)
@@ -821,30 +829,65 @@ public static class SnesVideoRenderer
                 continue;
             }
 
-            var highBits = (objectRam[512 + (objectIndex / 4)] >> ((objectIndex & 3) * 2)) & 0x03;
-            x |= (highBits & 1) << 8;
-            var large = (highBits & 2) != 0;
-            var objectSize = large ? largeSize : smallSize;
-            if (x >= 256)
+            if (hasPreviousObjectFrame && interpolationProgress < 1f)
             {
-                x -= 512;
+                var previousHighBits = (previousObjectRam[512 + (objectIndex / 4)] >> ((objectIndex & 3) * 2)) & 0x03;
+                var previousXRaw = previousObjectRam[objectAddress] | ((previousHighBits & 1) << 8);
+                var previousX = previousXRaw >= 256 ? previousXRaw - 512 : previousXRaw;
+                var xDelta = x - previousX;
+                if (Math.Abs(xDelta) <= MaximumInterpolatedObjectDelta)
+                {
+                    x = previousX + (xDelta * interpolationProgress);
+                }
+
+                var previousY = previousObjectRam[objectAddress + 1];
+                var yDelta = (int)y - previousY;
+                if (yDelta > 128)
+                {
+                    yDelta -= 256;
+                }
+                else if (yDelta < -128)
+                {
+                    yDelta += 256;
+                }
+
+                if (Math.Abs(yDelta) <= MaximumInterpolatedObjectDelta)
+                {
+                    y = previousY + (yDelta * interpolationProgress);
+                }
             }
+
+            var large = (currentHighBits & 2) != 0;
+            var objectSize = large ? largeSize : smallSize;
 
             var palette = (attributes >> 1) & 0x07;
             var horizontalFlip = (attributes & 0x40) != 0;
             var verticalFlip = (attributes & 0x80) != 0;
 
-            var objectY = (targetScanline - y) & 0xFF;
-            if (objectY >= objectSize)
+            var sourceY = targetScanline - y;
+            if (sourceY < -objectSize)
+            {
+                sourceY += 256;
+            }
+            else if (sourceY > objectSize)
+            {
+                sourceY -= 256;
+            }
+
+            if (sourceY <= -1f || sourceY >= objectSize)
             {
                 continue;
             }
 
-            var sourceY = verticalFlip ? objectSize - 1 - objectY : objectY;
-            for (var objectX = 0; objectX < objectSize; objectX++)
+            var sourceY0 = (int)MathF.Floor(sourceY);
+            var sourceY1 = sourceY0 + 1;
+            var fractionY = sourceY - sourceY0;
+            var firstScreenX = Math.Max(0, (int)MathF.Floor(x) - 1);
+            var lastScreenX = Math.Min(Width, (int)MathF.Ceiling(x + objectSize) + 1);
+            for (var screenX = firstScreenX; screenX < lastScreenX; screenX++)
             {
-                var screenX = x + objectX;
-                if ((uint)screenX >= Width)
+                var sourceX = screenX - x;
+                if (sourceX <= -1f || sourceX >= objectSize)
                 {
                     continue;
                 }
@@ -854,24 +897,105 @@ public static class SnesVideoRenderer
                     continue;
                 }
 
-                var sourceX = horizontalFlip ? objectSize - 1 - objectX : objectX;
-                var tileNumber = (tile + ((sourceY / 8) * 16) + (sourceX / 8)) & 0xFF;
+                var sourceX0 = (int)MathF.Floor(sourceX);
+                var sourceX1 = sourceX0 + 1;
+                var fractionX = sourceX - sourceX0;
+                var coverage = 0f;
+                var red = 0f;
+                var green = 0f;
+                var blue = 0f;
                 var objectTileBase = tileBase + ((attributes & 0x01) != 0 ? tileNameSelectOffset : 0);
-                var tileAddress = (objectTileBase + (tileNumber * 32)) & 0xFFFF;
-                var colorIndex = ReadTilePixel(videoRam, tileAddress, 4, sourceX & 7, sourceY & 7);
-                if (colorIndex == 0)
+                AccumulateObjectSample(
+                    sourceX0, sourceY0, (1f - fractionX) * (1f - fractionY),
+                    objectSize, tile, objectTileBase, palette, horizontalFlip, verticalFlip, videoRam, colorRam,
+                    ref coverage, ref red, ref green, ref blue);
+                if (fractionX > 0f)
+                {
+                    AccumulateObjectSample(
+                        sourceX1, sourceY0, fractionX * (1f - fractionY),
+                        objectSize, tile, objectTileBase, palette, horizontalFlip, verticalFlip, videoRam, colorRam,
+                        ref coverage, ref red, ref green, ref blue);
+                }
+
+                if (fractionY > 0f)
+                {
+                    AccumulateObjectSample(
+                        sourceX0, sourceY1, (1f - fractionX) * fractionY,
+                        objectSize, tile, objectTileBase, palette, horizontalFlip, verticalFlip, videoRam, colorRam,
+                        ref coverage, ref red, ref green, ref blue);
+                    if (fractionX > 0f)
+                    {
+                        AccumulateObjectSample(
+                            sourceX1, sourceY1, fractionX * fractionY,
+                            objectSize, tile, objectTileBase, palette, horizontalFlip, verticalFlip, videoRam, colorRam,
+                            ref coverage, ref red, ref green, ref blue);
+                    }
+                }
+
+                if (coverage <= 0f)
                 {
                     continue;
                 }
 
-                var colorValue = ReadColorValue(colorRam, 128 + (palette * 16) + colorIndex);
-                var color = ReadColor(colorValue, brightness, forcedBlank: false);
                 var pixelIndex = (targetScanline * Width) + screenX;
-                WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, color);
+                var destination = pixelColors[pixelIndex];
+                var inverseCoverage = 1f - coverage;
+                var colorValue = (ushort)(
+                    Math.Clamp((int)MathF.Round(red + ((destination & 0x1F) * inverseCoverage)), 0, 31)
+                    | (Math.Clamp((int)MathF.Round(green + (((destination >> 5) & 0x1F) * inverseCoverage)), 0, 31) << 5)
+                    | (Math.Clamp((int)MathF.Round(blue + (((destination >> 10) & 0x1F) * inverseCoverage)), 0, 31) << 10));
+                WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, ReadColor(colorValue, brightness, forcedBlank: false));
                 pixelColors[pixelIndex] = colorValue;
                 pixelSources[pixelIndex] = palette >= 4 ? (byte)5 : (byte)6;
             }
         }
+    }
+
+    private static void AccumulateObjectSample(
+        int sourceX,
+        int sourceY,
+        float weight,
+        int objectSize,
+        byte tile,
+        int objectTileBase,
+        int palette,
+        bool horizontalFlip,
+        bool verticalFlip,
+        ReadOnlySpan<byte> videoRam,
+        ReadOnlySpan<byte> colorRam,
+        ref float coverage,
+        ref float red,
+        ref float green,
+        ref float blue)
+    {
+        if (weight <= 0f || (uint)sourceX >= objectSize || (uint)sourceY >= objectSize)
+        {
+            return;
+        }
+
+        if (horizontalFlip)
+        {
+            sourceX = objectSize - 1 - sourceX;
+        }
+
+        if (verticalFlip)
+        {
+            sourceY = objectSize - 1 - sourceY;
+        }
+
+        var tileNumber = (tile + ((sourceY / 8) * 16) + (sourceX / 8)) & 0xFF;
+        var tileAddress = (objectTileBase + (tileNumber * 32)) & 0xFFFF;
+        var colorIndex = ReadTilePixel(videoRam, tileAddress, 4, sourceX & 7, sourceY & 7);
+        if (colorIndex == 0)
+        {
+            return;
+        }
+
+        var color = ReadColorValue(colorRam, 128 + (palette * 16) + colorIndex);
+        coverage += weight;
+        red += (color & 0x1F) * weight;
+        green += ((color >> 5) & 0x1F) * weight;
+        blue += ((color >> 10) & 0x1F) * weight;
     }
 
     private static (int Small, int Large) GetObjectSizes(int sizeMode)

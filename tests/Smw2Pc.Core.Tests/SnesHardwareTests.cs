@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using Smw2Pc.Core.Cpu;
 using Smw2Pc.Core.Machine;
 using Smw2Pc.Core.Rom;
 
@@ -71,6 +72,78 @@ public sealed class SnesHardwareTests
 
         memoryBus.WriteByte(0x7E0000, 0xA5);
         Assert.AreEqual((byte)0xA5, memoryBus.ReadByte(0x002120));
+    }
+
+    [TestMethod]
+    public void RendererInterpolatesObjectPositionInBothDirections()
+    {
+        var image = CreateRomImage();
+        for (var index = 0; index < 31; index++)
+        {
+            image[index] = 0xEA;
+        }
+
+        image[31] = 0x80;
+        image[32] = 0xDF;
+        using var romFile = TemporaryRomFile.Create(image);
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+        memoryBus.WriteByte(0x002100, 0x0F);
+        memoryBus.WriteByte(0x002101, 0);
+        memoryBus.WriteByte(0x00212C, 0x10);
+        memoryBus.WriteByte(0x002121, 129);
+        memoryBus.WriteByte(0x002122, 0x1F);
+        memoryBus.WriteByte(0x002122, 0);
+        memoryBus.WriteByte(0x002115, 0x80);
+        SetVideoRamAddress(memoryBus, 0);
+        for (var row = 0; row < 8; row++)
+        {
+            memoryBus.WriteByte(0x002118, 0xFF);
+            memoryBus.WriteByte(0x002119, 0);
+        }
+
+        for (var row = 0; row < 8; row++)
+        {
+            memoryBus.WriteByte(0x002118, 0);
+            memoryBus.WriteByte(0x002119, 0);
+        }
+
+        SetObjectZero(memoryBus, x: 20, y: 20);
+        runner.Run(18_000);
+        SetObjectZero(memoryBus, x: 29, y: 20);
+        runner.Run(18_000);
+        Assert.AreEqual((byte)20, memoryBus.Hardware.PreviousObjectAttributeMemory.Span[0]);
+        Assert.AreEqual((byte)29, memoryBus.Hardware.CurrentFrameObjectAttributeMemory.Span[0]);
+
+        var pixels = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
+        SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.5f);
+
+        var halfwayPixel = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
+        var solidPixel = ((20 * SnesVideoRenderer.Width) + 25) * SnesVideoRenderer.BytesPerPixel;
+        Assert.IsInRange((byte)128, (byte)144, pixels[halfwayPixel]);
+        Assert.AreEqual(byte.MaxValue, pixels[solidPixel]);
+
+        SetObjectZero(memoryBus, x: 20, y: 20);
+        runner.Run(18_000);
+        Assert.AreEqual((byte)29, memoryBus.Hardware.PreviousObjectAttributeMemory.Span[0]);
+        Assert.AreEqual((byte)20, memoryBus.Hardware.CurrentFrameObjectAttributeMemory.Span[0]);
+
+        SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.25f);
+
+        var reverseHalfwayPixel = ((20 * SnesVideoRenderer.Width) + 26) * SnesVideoRenderer.BytesPerPixel;
+        var reverseSolidPixel = ((20 * SnesVideoRenderer.Width) + 27) * SnesVideoRenderer.BytesPerPixel;
+        Assert.IsInRange((byte)56, (byte)72, pixels[reverseHalfwayPixel]);
+        Assert.AreEqual(byte.MaxValue, pixels[reverseSolidPixel]);
+    }
+
+    private static void SetObjectZero(SnesMemoryBus memoryBus, byte x, byte y)
+    {
+        memoryBus.WriteByte(0x002102, 0);
+        memoryBus.WriteByte(0x002103, 0);
+        memoryBus.WriteByte(0x002104, x);
+        memoryBus.WriteByte(0x002104, y);
+        memoryBus.WriteByte(0x002104, 0);
+        memoryBus.WriteByte(0x002104, 0);
     }
 
     private static void SetVideoRamAddress(SnesMemoryBus memoryBus, ushort address)

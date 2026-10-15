@@ -18,6 +18,8 @@ public sealed class SnesHardware
     private readonly byte[] videoRam = new byte[VideoRamSize];
     private readonly byte[] colorRam = new byte[0x200];
     private readonly byte[] objectAttributeMemory = new byte[544];
+    private readonly byte[] currentFrameObjectAttributeMemory = new byte[544];
+    private readonly byte[] previousObjectAttributeMemory = new byte[544];
     private readonly byte[] ppuRegisters = new byte[0x40];
     private readonly byte[] cpuRegisters = new byte[0x0E];
     private readonly byte[] dmaRegisters = new byte[0x80];
@@ -59,6 +61,8 @@ public sealed class SnesHardware
     private bool hdmaFrameStarted;
     private bool hasCompletedPpuFrame;
     private bool hasPreviousPpuFrameScrollOffsets;
+    private bool hasCompletedObjectAttributeFrame;
+    private bool hasPreviousObjectAttributeFrame;
     private bool nmiFlag;
     private bool nmiRequested;
 
@@ -89,6 +93,14 @@ public sealed class SnesHardware
     public ReadOnlyMemory<byte> ColorRam => colorRam;
 
     public ReadOnlyMemory<byte> ObjectAttributeMemory => objectAttributeMemory;
+
+    public ReadOnlyMemory<byte> CurrentFrameObjectAttributeMemory => hasCompletedObjectAttributeFrame
+        ? currentFrameObjectAttributeMemory
+        : objectAttributeMemory;
+
+    public ReadOnlyMemory<byte> PreviousObjectAttributeMemory => previousObjectAttributeMemory;
+
+    public bool HasPreviousObjectAttributeFrame => hasPreviousObjectAttributeFrame;
 
     public ReadOnlyMemory<byte> PpuRegisters => ppuRegisters;
 
@@ -210,6 +222,14 @@ public sealed class SnesHardware
 
                 if (frameInstructionPosition == InstructionsPerFrame)
                 {
+                    if (hasCompletedObjectAttributeFrame)
+                    {
+                        currentFrameObjectAttributeMemory.CopyTo(previousObjectAttributeMemory, 0);
+                        hasPreviousObjectAttributeFrame = true;
+                    }
+
+                    objectAttributeMemory.CopyTo(currentFrameObjectAttributeMemory, 0);
+                    hasCompletedObjectAttributeFrame = true;
                     inVBlank = false;
                     frameInstructionPosition = 0;
                     currentScanline = 0;
