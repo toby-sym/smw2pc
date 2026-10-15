@@ -42,6 +42,8 @@ public sealed class SnesHardware
     private byte fixedRed;
     private byte fixedGreen;
     private byte fixedBlue;
+    private ushort divideResult;
+    private ushort multiplyOrRemainderResult;
     private bool colorRamHighByte;
     private bool objectAttributeHighByte;
     private bool backgroundScrollHighByte;
@@ -55,6 +57,9 @@ public sealed class SnesHardware
     {
         scanlinesPerFrame = palRegion ? 312 : 262;
         vBlankStartInstruction = InstructionsPerFrame * 225 / scanlinesPerFrame;
+        cpuRegisters[0x02] = byte.MaxValue;
+        cpuRegisters[0x04] = byte.MaxValue;
+        cpuRegisters[0x05] = byte.MaxValue;
         ppuRegistersByScanline = new byte[scanlinesPerFrame * ppuRegisters.Length];
         fixedColorsByScanline = new ushort[scanlinesPerFrame];
         for (var scanline = 0; scanline < scanlinesPerFrame; scanline++)
@@ -142,7 +147,11 @@ public sealed class SnesHardware
             {
                 if (frameInstructionPosition == nextScanlineBoundary)
                 {
-                    ProcessHdmaScanline(memoryBus);
+                    if (!inVBlank)
+                    {
+                        ProcessHdmaScanline(memoryBus);
+                    }
+
                     currentScanline++;
                     if (currentScanline < scanlinesPerFrame)
                     {
@@ -202,6 +211,12 @@ public sealed class SnesHardware
         {
             if (!hdmaChannelActive[channel])
             {
+                continue;
+            }
+
+            if ((cpuRegisters[0x0C] & (1 << channel)) == 0)
+            {
+                hdmaChannelActive[channel] = false;
                 continue;
             }
 
@@ -274,7 +289,7 @@ public sealed class SnesHardware
             return;
         }
 
-        hdmaRepeat[channel] = (descriptor & 0x80) != 0;
+        hdmaRepeat[channel] = descriptor > 0x80;
         hdmaLineCounts[channel] = (byte)(descriptor & 0x7F);
         if (hdmaLineCounts[channel] == 0)
         {
@@ -387,6 +402,13 @@ public sealed class SnesHardware
             return true;
         }
 
+        if (address is >= 0x4214 and <= 0x4217)
+        {
+            var result = address < 0x4216 ? divideResult : multiplyOrRemainderResult;
+            value = (byte)(result >> ((address & 1) * 8));
+            return true;
+        }
+
         if (address == 0x2180)
         {
             value = workRam[workRamPortAddress];
@@ -466,6 +488,19 @@ public sealed class SnesHardware
             if (address == 0x4200 && nmiFlag && (value & 0x80) != 0)
             {
                 nmiRequested = true;
+            }
+
+            if (address == 0x4203)
+            {
+                // Math-unit latency remains approximate until the CPU runner tracks cycles.
+                multiplyOrRemainderResult = (ushort)(cpuRegisters[0x02] * value);
+            }
+
+            if (address == 0x4206)
+            {
+                var dividend = (ushort)(cpuRegisters[0x04] | (cpuRegisters[0x05] << 8));
+                divideResult = value == 0 ? ushort.MaxValue : (ushort)(dividend / value);
+                multiplyOrRemainderResult = value == 0 ? dividend : (ushort)(dividend % value);
             }
 
             if (address == 0x420B)

@@ -102,7 +102,16 @@ public static class SnesVideoRenderer
     {
         var registers = hardware.PpuRegisters.Span;
         var colorMath = registers[0x31];
-        var useSubScreen = (registers[0x30] & 0x02) != 0;
+        var useSubScreen = false;
+        for (var scanline = 0; scanline < Height; scanline++)
+        {
+            var scanlineRegisters = hardware.GetPpuRegistersForScanline(scanline + 1).Span;
+            if ((scanlineRegisters[0x30] & 0x02) != 0 && (scanlineRegisters[0x31] & 0x3F) != 0)
+            {
+                useSubScreen = true;
+                break;
+            }
+        }
         byte[]? subPixels = null;
         byte[]? subSources = null;
 
@@ -132,7 +141,8 @@ public static class SnesVideoRenderer
         {
             var x = pixel % Width;
             var scanline = pixel / Width;
-            var scanlineRegisters = hardware.GetPpuRegistersForScanline(scanline).Span;
+            var hardwareScanline = scanline + 1;
+            var scanlineRegisters = hardware.GetPpuRegistersForScanline(hardwareScanline).Span;
             var scanlineColorMath = scanlineRegisters[0x31];
             var colorWindowSelect = scanlineRegisters[0x30];
             var mainClipMode = (colorWindowSelect >> 6) & 0x03;
@@ -165,15 +175,16 @@ public static class SnesVideoRenderer
                 continue;
             }
 
-            var subIsTransparent = useLineSubScreen && IsColorMathWindowRegion(subMaskMode, inColorWindow);
+            var subIsTransparent = IsColorMathWindowRegion(subMaskMode, inColorWindow);
             if (subIsTransparent)
             {
                 continue;
             }
 
-            var addend = useLineSubScreen
+            var subIsBackdrop = useLineSubScreen && (subSources is null || subSources[pixel] == 0);
+            var addend = useLineSubScreen && !subIsBackdrop
                 ? (uint)(subPixels![offset] | (subPixels[offset + 1] << 8) | (subPixels[offset + 2] << 16))
-                : ReadColorWord(hardware.GetFixedColorForScanline(scanline), brightness);
+                : ReadColorWord(hardware.GetFixedColorForScanline(hardwareScanline), brightness);
             var mainRed = mainPixels[offset];
             var mainGreen = mainPixels[offset + 1];
             var mainBlue = mainPixels[offset + 2];
@@ -181,7 +192,7 @@ public static class SnesVideoRenderer
             var addGreen = (byte)(addend >> 8);
             var addBlue = (byte)(addend >> 16);
             var subtract = (scanlineColorMath & 0x80) != 0;
-            var applyHalf = (scanlineColorMath & 0x40) != 0;
+            var applyHalf = (scanlineColorMath & 0x40) != 0 && !subIsBackdrop;
 
             mainPixels[offset] = ApplyMathChannel(mainRed, addRed, subtract, applyHalf);
             mainPixels[offset + 1] = ApplyMathChannel(mainGreen, addGreen, subtract, applyHalf);
@@ -219,7 +230,7 @@ public static class SnesVideoRenderer
             return windowOne;
         }
 
-        return ApplyWindowLogic(windowOne, windowTwo, (registers[0x2B] >> 4) & 0x03);
+        return ApplyWindowLogic(windowOne, windowTwo, (registers[0x2B] >> 2) & 0x03);
     }
 
     private static bool IsColorMathWindowRegion(int regionMode, bool inColorWindow)
@@ -280,7 +291,9 @@ public static class SnesVideoRenderer
             return windowOne;
         }
 
-        return ApplyWindowLogic(windowOne, windowTwo, (registers[0x2A] >> (layer * 2)) & 0x03);
+        var logicRegister = layer < 4 ? registers[0x2A] : registers[0x2B];
+        var logicShift = layer < 4 ? layer * 2 : 0;
+        return ApplyWindowLogic(windowOne, windowTwo, (logicRegister >> logicShift) & 0x03);
     }
 
     private static bool IsWindowPixel(int x, int left, int right, bool inverted)
@@ -304,8 +317,13 @@ public static class SnesVideoRenderer
     {
         var result = subtract
             ? Math.Max(0, main - addend)
-            : Math.Min(byte.MaxValue, main + addend);
-        return (byte)(half ? result / 2 : result);
+            : main + addend;
+        if (half)
+        {
+            result /= 2;
+        }
+
+        return (byte)Math.Min(byte.MaxValue, result);
     }
 
     private static uint ReadColorWord(ushort color, int brightness)
@@ -398,6 +416,7 @@ public static class SnesVideoRenderer
         var objectRam = hardware.ObjectAttributeMemory.Span;
         var objectSizeMode = (registers[1] >> 5) & 0x07;
         var tileBase = (registers[1] & 0x07) * 0x4000;
+        var tileNameSelectOffset = (((registers[1] >> 3) & 0x03) + 1) * 0x2000;
         var (smallSize, largeSize) = GetObjectSizes(objectSizeMode);
 
         for (var objectIndex = 127; objectIndex >= 0; objectIndex--)
@@ -421,7 +440,7 @@ public static class SnesVideoRenderer
                 x -= 512;
             }
 
-            var palette = attributes & 0x07;
+            var palette = (attributes >> 1) & 0x07;
             var horizontalFlip = (attributes & 0x40) != 0;
             var verticalFlip = (attributes & 0x80) != 0;
 
@@ -434,7 +453,7 @@ public static class SnesVideoRenderer
                 }
 
                 var sourceY = verticalFlip ? objectSize - 1 - objectY : objectY;
-                var scanlineRegisters = hardware.GetPpuRegistersForScanline(screenY).Span;
+                var scanlineRegisters = hardware.GetPpuRegistersForScanline(screenY + 1).Span;
                 for (var objectX = 0; objectX < objectSize; objectX++)
                 {
                     var screenX = x + objectX;
@@ -450,7 +469,8 @@ public static class SnesVideoRenderer
 
                     var sourceX = horizontalFlip ? objectSize - 1 - objectX : objectX;
                     var tileNumber = (tile + ((sourceY / 8) * 16) + (sourceX / 8)) & 0xFF;
-                    var tileAddress = (tileBase + (tileNumber * 32)) & 0xFFFF;
+                    var objectTileBase = tileBase + ((attributes & 0x01) != 0 ? tileNameSelectOffset : 0);
+                    var tileAddress = (objectTileBase + (tileNumber * 32)) & 0xFFFF;
                     var colorIndex = ReadTilePixel(videoRam, tileAddress, 4, sourceX & 7, sourceY & 7);
                     if (colorIndex == 0)
                     {
@@ -513,7 +533,7 @@ public static class SnesVideoRenderer
         var bytesPerTile = bitsPerPixel * 8;
         for (var screenY = 0; screenY < Height; screenY++)
         {
-            var scanlineRegisters = hardware.GetPpuRegistersForScanline(screenY).Span;
+            var scanlineRegisters = hardware.GetPpuRegistersForScanline(screenY + 1).Span;
             var worldY = (screenY + verticalOffset) % pixelHeight;
             var cellY = worldY / tileHeight;
             var localY = worldY % tileHeight;
