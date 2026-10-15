@@ -192,8 +192,8 @@ public static class SnesVideoRenderer
     private static bool IsColorWindowPixel(ReadOnlySpan<byte> registers, int x)
     {
         var windowSettings = registers[0x25];
-        var windowOneEnabled = (windowSettings & 0x10) != 0;
-        var windowTwoEnabled = (windowSettings & 0x40) != 0;
+        var windowOneEnabled = (windowSettings & 0x20) != 0;
+        var windowTwoEnabled = (windowSettings & 0x80) != 0;
         if (!windowOneEnabled && !windowTwoEnabled)
         {
             return false;
@@ -203,12 +203,12 @@ public static class SnesVideoRenderer
             x,
             registers[0x26],
             registers[0x27],
-            inverted: (windowSettings & 0x20) != 0);
+            inverted: (windowSettings & 0x10) != 0);
         var windowTwo = IsWindowPixel(
             x,
             registers[0x28],
             registers[0x29],
-            inverted: (windowSettings & 0x80) != 0);
+            inverted: (windowSettings & 0x40) != 0);
         if (!windowOneEnabled)
         {
             return windowTwo;
@@ -253,8 +253,8 @@ public static class SnesVideoRenderer
             1 or 3 => 4,
             _ => 0,
         };
-        var windowOneEnabled = (selectorRegister & (1 << selectorShift)) != 0;
-        var windowTwoEnabled = (selectorRegister & (1 << (selectorShift + 2))) != 0;
+        var windowOneEnabled = (selectorRegister & (1 << (selectorShift + 1))) != 0;
+        var windowTwoEnabled = (selectorRegister & (1 << (selectorShift + 3))) != 0;
         if (!windowOneEnabled && !windowTwoEnabled)
         {
             return false;
@@ -264,12 +264,12 @@ public static class SnesVideoRenderer
             x,
             registers[0x26],
             registers[0x27],
-            (selectorRegister & (1 << (selectorShift + 1))) != 0);
+            (selectorRegister & (1 << selectorShift)) != 0);
         var windowTwo = IsWindowPixel(
             x,
             registers[0x28],
             registers[0x29],
-            (selectorRegister & (1 << (selectorShift + 3))) != 0);
+            (selectorRegister & (1 << (selectorShift + 2))) != 0);
         if (!windowOneEnabled)
         {
             return windowTwo;
