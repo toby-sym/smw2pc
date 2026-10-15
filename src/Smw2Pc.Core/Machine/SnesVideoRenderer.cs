@@ -582,7 +582,8 @@ public static class SnesVideoRenderer
                 }
 
                 var paletteGroup = (tileEntry >> 10) & 0x07;
-                var colorIndex = (paletteGroup * (1 << bitsPerPixel)) + paletteIndex;
+                var modeZeroPaletteBase = mode == 0 ? background * 32 : 0;
+                var colorIndex = modeZeroPaletteBase + (paletteGroup * (1 << bitsPerPixel)) + paletteIndex;
                 var color = ReadColor(colorRam, colorIndex, brightness, forcedBlank: false);
                 var pixelIndex = (screenY * Width) + screenX;
                 WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, color);
