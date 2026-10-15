@@ -90,7 +90,7 @@ public sealed class SnesMemoryBus
 
         if (IsSystemBank(bank))
         {
-            Hardware.TryWriteRegister((ushort)offset, value);
+            Hardware.TryWriteRegister(this, (ushort)offset, value);
         }
     }
 

@@ -5,21 +5,113 @@ public sealed class SnesHardware
     private const int WorkRamSize = 0x20000;
     private const int VideoRamSize = 0x10000;
     private const int ControllerCount = 2;
+    private const int InstructionsPerFrame = 18000;
+    private const int VBlankStartInstruction = 16000;
 
     private readonly byte[] workRam = new byte[WorkRamSize];
     private readonly byte[] videoRam = new byte[VideoRamSize];
+    private readonly byte[] colorRam = new byte[0x200];
+    private readonly byte[] objectAttributeMemory = new byte[544];
     private readonly byte[] ppuRegisters = new byte[0x40];
     private readonly byte[] apuPorts = new byte[4];
     private readonly byte[] cpuRegisters = new byte[0x0E];
     private readonly byte[] dmaRegisters = new byte[0x80];
+    private readonly ushort[] backgroundHorizontalOffsets = new ushort[4];
+    private readonly ushort[] backgroundVerticalOffsets = new ushort[4];
+    private readonly byte[] backgroundScrollLatches = new byte[8];
     private readonly SnesControllerButtons[] controllerButtons = new SnesControllerButtons[ControllerCount];
     private readonly ushort[] controllerShiftRegisters = new ushort[ControllerCount];
     private readonly int[] controllerShiftPositions = new int[ControllerCount];
+    private int apuHandshakeInstructionsRemaining = 256;
+    private int frameInstructionPosition;
     private uint workRamPortAddress;
     private ushort videoRamWordAddress;
+    private ushort objectAttributeWordAddress;
+    private byte colorRamAddress;
+    private bool colorRamHighByte;
+    private bool objectAttributeHighByte;
+    private bool backgroundScrollHighByte;
     private bool controllerStrobe;
+    private bool inVBlank;
+    private bool nmiFlag;
+    private bool nmiRequested;
 
     public ReadOnlyMemory<byte> VideoRam => videoRam;
+
+    public ReadOnlyMemory<byte> ColorRam => colorRam;
+
+    public ReadOnlyMemory<byte> ObjectAttributeMemory => objectAttributeMemory;
+
+    public ReadOnlyMemory<byte> PpuRegisters => ppuRegisters;
+
+    public ushort GetBackgroundHorizontalOffset(int background)
+    {
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(background, 4);
+        ArgumentOutOfRangeException.ThrowIfNegative(background);
+        return backgroundHorizontalOffsets[background];
+    }
+
+    public ushort GetBackgroundVerticalOffset(int background)
+    {
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(background, 4);
+        ArgumentOutOfRangeException.ThrowIfNegative(background);
+        return backgroundVerticalOffsets[background];
+    }
+
+    internal void AdvanceCpuInstructions(int instructionCount)
+    {
+        if (instructionCount <= 0)
+        {
+            return;
+        }
+
+        if (apuHandshakeInstructionsRemaining > 0)
+        {
+            apuHandshakeInstructionsRemaining -= instructionCount;
+            if (apuHandshakeInstructionsRemaining <= 0)
+            {
+                // The SPC700 boot ROM signals readiness with this two-byte handshake.
+                // Audio execution remains out of scope for this silent startup stub.
+                apuPorts[0] = 0xAA;
+                apuPorts[1] = 0xBB;
+            }
+        }
+
+        var instructionsRemaining = instructionCount;
+        while (instructionsRemaining > 0)
+        {
+            var nextBoundary = inVBlank ? InstructionsPerFrame : VBlankStartInstruction;
+            var untilBoundary = nextBoundary - frameInstructionPosition;
+            var advance = Math.Min(instructionsRemaining, untilBoundary);
+            frameInstructionPosition += advance;
+            instructionsRemaining -= advance;
+
+            if (frameInstructionPosition == nextBoundary)
+            {
+                if (inVBlank)
+                {
+                    inVBlank = false;
+                    frameInstructionPosition = 0;
+                }
+                else
+                {
+                    inVBlank = true;
+                    nmiFlag = true;
+                    if ((cpuRegisters[0] & 0x80) != 0)
+                    {
+                        nmiRequested = true;
+                    }
+                }
+            }
+        }
+    }
+
+    internal bool ConsumeNmiRequest()
+    {
+        var requested = nmiRequested;
+        nmiRequested = false;
+        return requested;
+    }
 
     public void SetControllerButtons(int port, SnesControllerButtons buttons)
     {
@@ -66,6 +158,19 @@ public sealed class SnesHardware
             return true;
         }
 
+        if (address == 0x4210)
+        {
+            value = (byte)((openBus & 0x7F) | (nmiFlag ? 0x80 : 0));
+            nmiFlag = false;
+            return true;
+        }
+
+        if (address == 0x4212)
+        {
+            value = (byte)((openBus & 0x7E) | (inVBlank ? 0x80 : 0));
+            return true;
+        }
+
         if (address == 0x2180)
         {
             value = workRam[workRamPortAddress];
@@ -102,8 +207,10 @@ public sealed class SnesHardware
         return false;
     }
 
-    internal bool TryWriteRegister(ushort address, byte value)
+    internal bool TryWriteRegister(SnesMemoryBus memoryBus, ushort address, byte value)
     {
+        ArgumentNullException.ThrowIfNull(memoryBus);
+
         if (address is >= 0x2100 and <= 0x213F)
         {
             WritePpuRegister(address, value);
@@ -113,6 +220,7 @@ public sealed class SnesHardware
         if (address is >= 0x2140 and <= 0x217F)
         {
             apuPorts[(address - 0x2140) & 0x03] = value;
+            apuHandshakeInstructionsRemaining = 256;
             return true;
         }
 
@@ -138,6 +246,16 @@ public sealed class SnesHardware
         if (address is >= 0x4200 and <= 0x420D)
         {
             cpuRegisters[address - 0x4200] = value;
+            if (address == 0x4200 && inVBlank && (value & 0x80) != 0)
+            {
+                nmiRequested = true;
+            }
+
+            if (address == 0x420B)
+            {
+                TransferDma(memoryBus, value);
+            }
+
             return true;
         }
 
@@ -150,6 +268,65 @@ public sealed class SnesHardware
         return false;
     }
 
+    private void TransferDma(SnesMemoryBus memoryBus, byte enabledChannels)
+    {
+        for (var channel = 0; channel < 8; channel++)
+        {
+            if ((enabledChannels & (1 << channel)) == 0)
+            {
+                continue;
+            }
+
+            var registerBase = channel * 0x10;
+            var mode = dmaRegisters[registerBase];
+            var bBusAddress = dmaRegisters[registerBase + 1];
+            var aAddress = (ushort)(dmaRegisters[registerBase + 2] | (dmaRegisters[registerBase + 3] << 8));
+            var aBank = dmaRegisters[registerBase + 4];
+            var transferSize = dmaRegisters[registerBase + 5] | (dmaRegisters[registerBase + 6] << 8);
+            if (transferSize == 0)
+            {
+                transferSize = 0x10000;
+            }
+
+            var transferMode = mode & 0x07;
+            var transferPattern = transferMode switch
+            {
+                1 => new byte[] { 0, 1 },
+                3 or 7 => new byte[] { 0, 0, 1, 1 },
+                4 => new byte[] { 0, 1, 2, 3 },
+                5 => new byte[] { 0, 1, 0, 1 },
+                _ => new byte[] { 0 },
+            };
+            var fixedAddress = (mode & 0x08) != 0;
+            var decrementAddress = (mode & 0x10) != 0;
+            var bToA = (mode & 0x80) != 0;
+
+            for (var index = 0; index < transferSize; index++)
+            {
+                var bAddress = (ushort)(0x2100 + ((bBusAddress + transferPattern[index % transferPattern.Length]) & 0xFF));
+                var aBusAddress = ((uint)aBank << 16) | aAddress;
+                if (bToA)
+                {
+                    memoryBus.WriteByte(aBusAddress, memoryBus.ReadByte(bAddress));
+                }
+                else
+                {
+                    memoryBus.WriteByte(bAddress, memoryBus.ReadByte(aBusAddress));
+                }
+
+                if (!fixedAddress)
+                {
+                    aAddress = unchecked((ushort)(aAddress + (decrementAddress ? -1 : 1)));
+                }
+            }
+
+            dmaRegisters[registerBase + 2] = (byte)aAddress;
+            dmaRegisters[registerBase + 3] = (byte)(aAddress >> 8);
+            dmaRegisters[registerBase + 5] = 0;
+            dmaRegisters[registerBase + 6] = 0;
+        }
+    }
+
     private void WritePpuRegister(ushort address, byte value)
     {
         var register = address - 0x2100;
@@ -159,8 +336,33 @@ public sealed class SnesHardware
         }
 
         ppuRegisters[register] = value;
+        if (address is >= 0x210D and <= 0x2114)
+        {
+            WriteBackgroundScroll(address, value);
+        }
+
         switch (address)
         {
+            case 0x2102:
+                objectAttributeWordAddress = (ushort)((objectAttributeWordAddress & 0x100) | value);
+                objectAttributeHighByte = false;
+                break;
+            case 0x2103:
+                objectAttributeWordAddress = (ushort)((objectAttributeWordAddress & 0xFF) | ((value & 1) << 8));
+                objectAttributeHighByte = false;
+                break;
+            case 0x2104:
+                var objectAttributeByteAddress = objectAttributeWordAddress >= 0x100
+                    ? 512 + ((objectAttributeWordAddress & 0x0F) * 2) + (objectAttributeHighByte ? 1 : 0)
+                    : (objectAttributeWordAddress * 2) + (objectAttributeHighByte ? 1 : 0);
+                objectAttributeMemory[objectAttributeByteAddress] = value;
+                objectAttributeHighByte = !objectAttributeHighByte;
+                if (!objectAttributeHighByte)
+                {
+                    objectAttributeWordAddress = (ushort)((objectAttributeWordAddress + 1) & 0x1FF);
+                }
+
+                break;
             case 0x2116:
                 videoRamWordAddress = (ushort)((videoRamWordAddress & 0xFF00) | value);
                 break;
@@ -175,7 +377,47 @@ public sealed class SnesHardware
                 videoRam[(videoRamWordAddress << 1) | 1] = value;
                 IncrementVideoRamAddress(highByte: true);
                 break;
+            case 0x2121:
+                colorRamAddress = value;
+                colorRamHighByte = false;
+                break;
+            case 0x2122:
+                var colorRamByteAddress = colorRamAddress * 2 + (colorRamHighByte ? 1 : 0);
+                colorRam[colorRamByteAddress] = colorRamHighByte ? (byte)(value & 0x7F) : value;
+                colorRamHighByte = !colorRamHighByte;
+                if (!colorRamHighByte)
+                {
+                    colorRamAddress++;
+                }
+
+                break;
         }
+    }
+
+    private void WriteBackgroundScroll(ushort address, byte value)
+    {
+        var relative = address - 0x210D;
+        var background = relative / 2;
+        var isVertical = (relative & 1) != 0;
+        var latchIndex = relative;
+        if (!backgroundScrollHighByte)
+        {
+            backgroundScrollLatches[latchIndex] = value;
+        }
+        else
+        {
+            var offset = (ushort)(backgroundScrollLatches[latchIndex] | ((value & 0x03) << 8));
+            if (isVertical)
+            {
+                backgroundVerticalOffsets[background] = offset;
+            }
+            else
+            {
+                backgroundHorizontalOffsets[background] = offset;
+            }
+        }
+
+        backgroundScrollHighByte = !backgroundScrollHighByte;
     }
 
     private void IncrementVideoRamAddress(bool highByte)

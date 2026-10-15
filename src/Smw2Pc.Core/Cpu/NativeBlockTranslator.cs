@@ -28,11 +28,6 @@ public sealed class NativeBlockTranslator
         }
 
         var startAddress = ComposeAddress(state.ProgramBank, state.ProgramCounter);
-        if (!memoryBus.IsCartridgeRomAddress(startAddress))
-        {
-            throw new NotSupportedException("This native translator pass only translates code mapped from cartridge ROM.");
-        }
-
         var method = new DynamicMethod(
             $"native_block_{startAddress:X6}",
             typeof(void),
@@ -125,10 +120,18 @@ public sealed class NativeBlockTranslator
             or CpuAddressingMode.DirectPage
             or CpuAddressingMode.DirectPageX
             or CpuAddressingMode.DirectPageY
+            or CpuAddressingMode.DirectPageIndexedIndirect
+            or CpuAddressingMode.DirectPageIndirect
+            or CpuAddressingMode.DirectPageIndirectY
+            or CpuAddressingMode.DirectPageIndirectLong
+            or CpuAddressingMode.DirectPageIndirectLongY
+            or CpuAddressingMode.StackRelative
+            or CpuAddressingMode.StackRelativeIndirectY
             or CpuAddressingMode.Relative => ReadProgramByte(memoryBus, state.ProgramBank, ref programCounter),
             CpuAddressingMode.Absolute
             or CpuAddressingMode.AbsoluteX
-            or CpuAddressingMode.AbsoluteY => ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter),
+            or CpuAddressingMode.AbsoluteY
+            or CpuAddressingMode.AbsoluteIndirectLong => ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter),
             CpuAddressingMode.Long
             or CpuAddressingMode.LongX => ReadLongAddress(memoryBus, state.ProgramBank, ref programCounter),
             _ => throw new ArgumentOutOfRangeException(nameof(addressingMode), addressingMode, "Unsupported addressing mode."),
@@ -169,11 +172,6 @@ public sealed class NativeBlockTranslator
     private static byte ReadProgramByte(SnesMemoryBus memoryBus, byte programBank, ref ushort programCounter)
     {
         var address = ComposeAddress(programBank, programCounter);
-        if (!memoryBus.IsCartridgeRomAddress(address))
-        {
-            throw new NotSupportedException($"Instruction data at 0x{address:X6} is not mapped from cartridge ROM.");
-        }
-
         var value = memoryBus.ReadByte(address);
         programCounter = unchecked((ushort)(programCounter + 1));
         return value;
@@ -183,8 +181,13 @@ public sealed class NativeBlockTranslator
     {
         return operation is CpuOperation.Stop
             or CpuOperation.JumpAbsolute
+            or CpuOperation.JumpLong
+            or CpuOperation.JumpIndirectLong
             or CpuOperation.CallAbsolute
+            or CpuOperation.CallLong
             or CpuOperation.ReturnFromSubroutine
+            or CpuOperation.ReturnFromSubroutineLong
+            or CpuOperation.ReturnFromInterrupt
             or CpuOperation.BranchPlus
             or CpuOperation.BranchMinus
             or CpuOperation.BranchOverflowClear

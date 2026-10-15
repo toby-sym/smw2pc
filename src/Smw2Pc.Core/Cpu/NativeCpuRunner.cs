@@ -30,6 +30,12 @@ public sealed class NativeCpuRunner
             var blockSize = Math.Min(MaximumBlockSize, instructionBudget - instructionsExecuted);
             var block = GetOrTranslateBlock(blockSize);
             block.Execute(State, MemoryBus);
+            MemoryBus.Hardware.AdvanceCpuInstructions(block.InstructionCount);
+            if (MemoryBus.Hardware.ConsumeNmiRequest())
+            {
+                EnterNmi();
+            }
+
             instructionsExecuted += block.InstructionCount;
         }
 
@@ -39,6 +45,13 @@ public sealed class NativeCpuRunner
     private NativeCpuBlock GetOrTranslateBlock(int maximumInstructions)
     {
         var address = ((uint)State.ProgramBank << 16) | State.ProgramCounter;
+        if (!MemoryBus.IsCartridgeRomAddress(address))
+        {
+            // WRAM can contain code copied from the cartridge and can be rewritten at runtime.
+            // Translate one instruction at a time so each fetch sees current memory contents.
+            return translator.Translate(MemoryBus, State, 1);
+        }
+
         var mode = (byte)(State.Status & (CpuStatusFlags.Accumulator8Bit | CpuStatusFlags.Index8Bit));
         var key = new TranslationKey(address, mode, State.EmulationMode, maximumInstructions);
 
@@ -50,6 +63,31 @@ public sealed class NativeCpuRunner
         block = translator.Translate(MemoryBus, State, maximumInstructions);
         translatedBlocks.Add(key, block);
         return block;
+    }
+
+    private void EnterNmi()
+    {
+        if (!State.EmulationMode)
+        {
+            PushByte(State.ProgramBank);
+        }
+
+        PushByte((byte)(State.ProgramCounter >> 8));
+        PushByte((byte)State.ProgramCounter);
+        PushByte(State.Status);
+        State.Status |= CpuStatusFlags.InterruptDisable;
+        State.Status &= unchecked((byte)~CpuStatusFlags.Decimal);
+        State.ProgramBank = 0;
+        var vector = State.EmulationMode ? 0xFFFAu : 0xFFEAu;
+        State.ProgramCounter = MemoryBus.ReadWordInBank(vector);
+    }
+
+    private void PushByte(byte value)
+    {
+        MemoryBus.WriteByte(State.StackPointer, value);
+        State.StackPointer = State.EmulationMode
+            ? (ushort)(0x0100 | ((State.StackPointer - 1) & 0x00FF))
+            : (ushort)(State.StackPointer - 1);
     }
 
     private readonly record struct TranslationKey(
