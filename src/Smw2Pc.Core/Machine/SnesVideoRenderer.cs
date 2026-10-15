@@ -76,7 +76,9 @@ public static class SnesVideoRenderer
                 videoRam,
                 colorRam,
                 scrollInterpolationProgress);
-            if (interpolationProgress < 1f && hardware.HasPreviousPpuFrameScrollOffsets)
+            if (interpolationProgress < 1f
+                && hardware.HasPreviousPpuFrameScrollOffsets
+                && HasModeSevenScanline(hardware))
             {
                 var sourcePixels = ArrayPool<byte>.Shared.Rent(frameByteCount);
                 try
@@ -100,6 +102,19 @@ public static class SnesVideoRenderer
             ArrayPool<byte>.Shared.Return(pixelSourcesBuffer);
             ArrayPool<ushort>.Shared.Return(pixelColorsBuffer);
         }
+    }
+
+    private static bool HasModeSevenScanline(SnesHardware hardware)
+    {
+        for (var screenY = 0; screenY < Height; screenY++)
+        {
+            if ((hardware.GetPpuRegistersForScanline(screenY + 1).Span[0x05] & 0x07) == 7)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void InterpolateCameraScroll(
@@ -914,6 +929,8 @@ public static class SnesVideoRenderer
             verticalDelta = 0;
         }
 
+        // Sample each layer at its own intermediate scroll position before compositing;
+        // shifting the finished frame would mix layers that move at different speeds.
         var sampleShiftX = -horizontalDelta * (1f - interpolationProgress);
         var sampleShiftY = -verticalDelta * (1f - interpolationProgress);
         var characterBaseRegister = registers[0x0B + background / 2];
@@ -937,6 +954,35 @@ public static class SnesVideoRenderer
             var fractionX = sampleX - x0;
             var fractionY = sampleY - y0;
             var pixelIndex = (screenY * Width) + screenX;
+            if (fractionX == 0f && fractionY == 0f)
+            {
+                if (TrySampleBackgroundColor(
+                    x0,
+                    y0,
+                    pixelWidth,
+                    pixelHeight,
+                    tileWidth,
+                    tileHeight,
+                    mapBase,
+                    mapWidth,
+                    characterBase,
+                    bytesPerTile,
+                    bitsPerPixel,
+                    priority,
+                    mode,
+                    background,
+                    videoRam,
+                    colorRam,
+                    out var exactColor))
+                {
+                    WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, ReadColor(exactColor, brightness, forcedBlank: false));
+                    pixelColors[pixelIndex] = exactColor;
+                    pixelSources[pixelIndex] = (byte)(background + 1);
+                }
+
+                continue;
+            }
+
             var destination = pixelColors[pixelIndex];
             var destinationRed = destination & 0x1F;
             var destinationGreen = (destination >> 5) & 0x1F;
@@ -946,6 +992,8 @@ public static class SnesVideoRenderer
             var green = 0f;
             var blue = 0f;
 
+            // Transparent taps contribute no coverage, so the layer beneath remains visible
+            // at tile edges while this background moves between integer pixel positions.
             AccumulateBackgroundSample(
                 x0, y0, (1f - fractionX) * (1f - fractionY),
                 pixelWidth, pixelHeight, tileWidth, tileHeight, mapBase, mapWidth, characterBase,
