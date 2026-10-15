@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.IO.Compression;
 using System.Text;
 
 namespace Smw2Pc.Core.Rom;
@@ -15,9 +16,10 @@ public sealed class SnesRom
 
     private readonly byte[] data;
 
-    private SnesRom(string sourcePath, byte[] data, bool hasCopierHeader, SnesRomHeader header)
+    private SnesRom(string sourcePath, string fileName, byte[] data, bool hasCopierHeader, SnesRomHeader header)
     {
         SourcePath = sourcePath;
+        FileName = fileName;
         this.data = data;
         HasCopierHeader = hasCopierHeader;
         Header = header;
@@ -25,7 +27,7 @@ public sealed class SnesRom
 
     public string SourcePath { get; }
 
-    public string FileName => Path.GetFileName(SourcePath);
+    public string FileName { get; }
 
     public ReadOnlyMemory<byte> Data => data;
 
@@ -45,9 +47,77 @@ public sealed class SnesRom
             throw new FileNotFoundException("The selected ROM file could not be found.", path);
         }
 
-        var hasCopierHeader = fileInfo.Length % RomBankSize == CopierHeaderSize;
+        if (string.Equals(Path.GetExtension(path), ".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            return LoadFromZip(path);
+        }
+
+        if (fileInfo.Length > MaximumRomSize + CopierHeaderSize)
+        {
+            throw new InvalidDataException("The selected file is larger than the supported SNES ROM size.");
+        }
+
+        return Create(path, Path.GetFileName(path), File.ReadAllBytes(path));
+    }
+
+    private static SnesRom LoadFromZip(string path)
+    {
+        using var archive = ZipFile.OpenRead(path);
+        var romEntries = archive.Entries
+            .Where(entry => IsRomFileName(entry.Name))
+            .ToArray();
+
+        if (romEntries.Length == 0)
+        {
+            throw new InvalidDataException("The ZIP archive does not contain an .sfc or .smc ROM file.");
+        }
+
+        if (romEntries.Length > 1)
+        {
+            throw new InvalidDataException("The ZIP archive contains multiple ROM files; it must contain exactly one .sfc or .smc file.");
+        }
+
+        var entry = romEntries[0];
+        if (entry.Length > MaximumRomSize + CopierHeaderSize)
+        {
+            throw new InvalidDataException("The ROM inside the ZIP archive is larger than the supported SNES ROM size.");
+        }
+
+        using var entryStream = entry.Open();
+        using var romBuffer = new MemoryStream((int)entry.Length);
+        var copyBuffer = new byte[81920];
+
+        while (true)
+        {
+            var bytesRead = entryStream.Read(copyBuffer, 0, copyBuffer.Length);
+            if (bytesRead == 0)
+            {
+                break;
+            }
+
+            if (romBuffer.Length + bytesRead > MaximumRomSize + CopierHeaderSize)
+            {
+                throw new InvalidDataException("The ROM inside the ZIP archive is larger than the supported SNES ROM size.");
+            }
+
+            romBuffer.Write(copyBuffer, 0, bytesRead);
+        }
+
+        return Create(path, entry.Name, romBuffer.ToArray());
+    }
+
+    private static bool IsRomFileName(string fileName)
+    {
+        var extension = Path.GetExtension(fileName);
+        return string.Equals(extension, ".sfc", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(extension, ".smc", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static SnesRom Create(string sourcePath, string fileName, byte[] fileData)
+    {
+        var hasCopierHeader = fileData.Length % RomBankSize == CopierHeaderSize;
         var headerOffset = hasCopierHeader ? CopierHeaderSize : 0;
-        var romSize = fileInfo.Length - headerOffset;
+        var romSize = fileData.Length - headerOffset;
 
         if (romSize < MinimumRomSize)
         {
@@ -59,11 +129,10 @@ public sealed class SnesRom
             throw new InvalidDataException("The selected file is larger than the supported SNES ROM size.");
         }
 
-        var fileData = File.ReadAllBytes(path);
         var romData = fileData.AsSpan(headerOffset).ToArray();
         var header = FindHeader(romData);
 
-        return new SnesRom(path, romData, hasCopierHeader, header);
+        return new SnesRom(sourcePath, fileName, romData, hasCopierHeader, header);
     }
 
     private static SnesRomHeader FindHeader(ReadOnlySpan<byte> romData)

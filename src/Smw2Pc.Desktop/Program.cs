@@ -32,7 +32,7 @@ internal static class Program
         SDL.SetRenderVSync(renderer, 1);
 
         var running = true;
-        var statusMessage = "Select a local SNES ROM file (.sfc or .smc).";
+        var statusMessage = "Choose .sfc/.smc or ZIP (one ROM only).";
         SnesRom? loadedRom = null;
         var openButton = new SDL.FRect { X = 24, Y = 24, W = 192, H = 48 };
 

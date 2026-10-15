@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.IO.Compression;
 using System.Text;
 using Smw2Pc.Core.Rom;
 
@@ -39,6 +40,37 @@ public sealed class SnesRomTests
         Assert.AreEqual((byte)0x21, rom.Header.MapMode);
         Assert.AreEqual(0x8000, rom.SizeBytes);
         CollectionAssert.AreEqual(romData, rom.Data.ToArray());
+    }
+
+    [TestMethod]
+    public void LoadReadsRomFromZipArchiveWithoutExtractingIt()
+    {
+        var romData = CreateRomImage("ZIPPED ROM", 0x20);
+        using var archive = TemporaryZipFile.Create(("games/ZIPPED ROM.SFC", romData));
+
+        var rom = SnesRom.Load(archive.Path);
+
+        Assert.AreEqual("ZIPPED ROM.SFC", rom.FileName);
+        Assert.AreEqual(archive.Path, rom.SourcePath);
+        Assert.AreEqual("ZIPPED ROM", rom.Header.Title);
+        CollectionAssert.AreEqual(romData, rom.Data.ToArray());
+    }
+
+    [TestMethod]
+    public void LoadRejectsZipWithoutRomFile()
+    {
+        using var archive = TemporaryZipFile.Create(("readme.txt", Encoding.UTF8.GetBytes("not a ROM")));
+
+        Assert.ThrowsExactly<InvalidDataException>(() => SnesRom.Load(archive.Path));
+    }
+
+    [TestMethod]
+    public void LoadRejectsZipWithMultipleRomFiles()
+    {
+        var romData = CreateRomImage("TEST ROM", 0x20);
+        using var archive = TemporaryZipFile.Create(("one.sfc", romData), ("two.smc", romData));
+
+        Assert.ThrowsExactly<InvalidDataException>(() => SnesRom.Load(archive.Path));
     }
 
     [TestMethod]
@@ -89,6 +121,37 @@ public sealed class SnesRomTests
             var file = new TemporaryRomFile(data);
             File.WriteAllBytes(file.Path, data);
             return file;
+        }
+
+        public void Dispose()
+        {
+            File.Delete(Path);
+        }
+    }
+
+    private sealed class TemporaryZipFile : IDisposable
+    {
+        private TemporaryZipFile(string path)
+        {
+            Path = path;
+        }
+
+        public string Path { get; }
+
+        public static TemporaryZipFile Create(params (string Name, byte[] Data)[] entries)
+        {
+            var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"{Guid.NewGuid():N}.zip");
+            using (var archive = ZipFile.Open(path, ZipArchiveMode.Create))
+            {
+                foreach (var (name, data) in entries)
+                {
+                    var entry = archive.CreateEntry(name, CompressionLevel.Optimal);
+                    using var stream = entry.Open();
+                    stream.Write(data);
+                }
+            }
+
+            return new TemporaryZipFile(path);
         }
 
         public void Dispose()
