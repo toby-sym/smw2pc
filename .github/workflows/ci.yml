@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Format and style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore Smw2Pc.sln
+
+      - name: Check formatting
+        run: dotnet format Smw2Pc.sln --verify-no-changes --no-restore
+
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore Smw2Pc.sln
+
+      - name: Build
+        run: dotnet build Smw2Pc.sln --configuration Release --no-restore
+
+      # This starts running real tests automatically when test projects are added.
+      - name: Test
+        run: dotnet test Smw2Pc.sln --configuration Release --no-build --no-restore

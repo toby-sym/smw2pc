@@ -1,0 +1,38 @@
+name: Package Windows x64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Publish Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish self-contained app
+        run: >-
+          dotnet publish src/Smw2Pc.Desktop/Smw2Pc.Desktop.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          --output artifacts/win-x64
+
+      - name: Archive build
+        run: Compress-Archive -Path artifacts/win-x64/* -DestinationPath artifacts/Smw2Pc-win-x64.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Smw2Pc-win-x64
+          path: artifacts/Smw2Pc-win-x64.zip
