@@ -222,10 +222,10 @@ internal static class CpuInstructionExecutor
                 SetIndex(state, (ushort)(state.Y - 1), isX: false, indexesAre8Bit);
                 return;
             case CpuOperation.TransferAToX:
-                SetIndex(state, accumulator, isX: true, indexesAre8Bit);
+                SetIndex(state, state.Accumulator, isX: true, indexesAre8Bit);
                 return;
             case CpuOperation.TransferAToY:
-                SetIndex(state, accumulator, isX: false, indexesAre8Bit);
+                SetIndex(state, state.Accumulator, isX: false, indexesAre8Bit);
                 return;
             case CpuOperation.TransferXToA:
                 SetAccumulator(state, state.X, accumulatorIs8Bit);

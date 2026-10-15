@@ -21,12 +21,15 @@ public static class SnesVideoRenderer
         var brightness = registers[0] & 0x0F;
         var screenEnable = registers[0x2C];
         var mode = registers[0x05] & 0x07;
-        var backdrop = ReadColor(colorRam, 0, brightness, forcedBlank);
+        var backdropColor = ReadColorValue(colorRam, 0);
+        var backdrop = ReadColor(backdropColor, brightness, forcedBlank);
         var pixelSources = new byte[Width * Height];
+        var pixelColors = new ushort[Width * Height];
 
         for (var pixel = 0; pixel < Width * Height; pixel++)
         {
             WriteColor(rgbaPixels, pixel * BytesPerPixel, backdrop);
+            pixelColors[pixel] = backdropColor;
         }
 
         if (forcedBlank)
@@ -42,10 +45,11 @@ public static class SnesVideoRenderer
             brightness,
             rgbaPixels,
             pixelSources,
+            pixelColors,
             videoRam,
             colorRam);
 
-        ApplyColorMath(hardware, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        ApplyColorMath(hardware, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
     }
 
     private static void DrawScreenLayers(
@@ -56,12 +60,13 @@ public static class SnesVideoRenderer
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
+        Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
         ReadOnlySpan<byte> colorRam)
     {
         if (mode == 1)
         {
-            DrawModeOneLayers(hardware, screenEnable, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+            DrawModeOneLayers(hardware, screenEnable, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
         }
         else
         {
@@ -81,13 +86,14 @@ public static class SnesVideoRenderer
                     brightness,
                     rgbaPixels,
                     pixelSources,
+                    pixelColors,
                     videoRam,
                     colorRam);
             }
 
             if ((screenEnable & 0x10) != 0)
             {
-                DrawObjects(hardware, priority: -1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+                DrawObjects(hardware, priority: -1, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
             }
         }
     }
@@ -97,6 +103,7 @@ public static class SnesVideoRenderer
         int brightness,
         Span<byte> mainPixels,
         ReadOnlySpan<byte> mainSources,
+        Span<ushort> mainColors,
         ReadOnlySpan<byte> videoRam,
         ReadOnlySpan<byte> colorRam)
     {
@@ -114,15 +121,19 @@ public static class SnesVideoRenderer
         }
         byte[]? subPixels = null;
         byte[]? subSources = null;
+        ushort[]? subColors = null;
 
         if ((colorMath & 0x3F) != 0 && useSubScreen)
         {
             subPixels = new byte[mainPixels.Length];
             subSources = new byte[mainSources.Length];
-            var backdrop = ReadColor(colorRam, 0, brightness, forcedBlank: false);
+            subColors = new ushort[mainSources.Length];
+            var backdropColor = ReadColorValue(colorRam, 0);
+            var backdrop = ReadColor(backdropColor, brightness, forcedBlank: false);
             for (var pixel = 0; pixel < Width * Height; pixel++)
             {
                 WriteColor(subPixels, pixel * BytesPerPixel, backdrop);
+                subColors![pixel] = backdropColor;
             }
 
             DrawScreenLayers(
@@ -133,6 +144,7 @@ public static class SnesVideoRenderer
                 brightness,
                 subPixels,
                 subSources,
+                subColors,
                 videoRam,
                 colorRam);
         }
@@ -152,9 +164,8 @@ public static class SnesVideoRenderer
             var offset = pixel * BytesPerPixel;
             if (IsColorMathWindowRegion(mainClipMode, inColorWindow))
             {
-                mainPixels[offset] = 0;
-                mainPixels[offset + 1] = 0;
-                mainPixels[offset + 2] = 0;
+                mainColors[pixel] = 0;
+                WriteColor(mainPixels, offset, ReadColor(0, brightness, forcedBlank: false));
             }
 
             if ((scanlineColorMath & 0x3F) == 0)
@@ -183,20 +194,12 @@ public static class SnesVideoRenderer
 
             var subIsBackdrop = useLineSubScreen && (subSources is null || subSources[pixel] == 0);
             var addend = useLineSubScreen && !subIsBackdrop
-                ? (uint)(subPixels![offset] | (subPixels[offset + 1] << 8) | (subPixels[offset + 2] << 16))
-                : ReadColorWord(hardware.GetFixedColorForScanline(hardwareScanline), brightness);
-            var mainRed = mainPixels[offset];
-            var mainGreen = mainPixels[offset + 1];
-            var mainBlue = mainPixels[offset + 2];
-            var addRed = (byte)addend;
-            var addGreen = (byte)(addend >> 8);
-            var addBlue = (byte)(addend >> 16);
+                ? subColors![pixel]
+                : hardware.GetFixedColorForScanline(hardwareScanline);
             var subtract = (scanlineColorMath & 0x80) != 0;
             var applyHalf = (scanlineColorMath & 0x40) != 0 && !subIsBackdrop;
-
-            mainPixels[offset] = ApplyMathChannel(mainRed, addRed, subtract, applyHalf);
-            mainPixels[offset + 1] = ApplyMathChannel(mainGreen, addGreen, subtract, applyHalf);
-            mainPixels[offset + 2] = ApplyMathChannel(mainBlue, addBlue, subtract, applyHalf);
+            mainColors[pixel] = ApplyColorMath(mainColors[pixel], addend, subtract, applyHalf);
+            WriteColor(mainPixels, offset, ReadColor(mainColors[pixel], brightness, forcedBlank: false));
         }
     }
 
@@ -313,21 +316,43 @@ public static class SnesVideoRenderer
         };
     }
 
-    private static byte ApplyMathChannel(byte main, byte addend, bool subtract, bool half)
+    private static ushort ApplyColorMath(ushort main, ushort addend, bool subtract, bool half)
     {
-        var result = subtract
-            ? Math.Max(0, main - addend)
-            : main + addend;
-        if (half)
+        if (!subtract)
         {
-            result /= 2;
+            if (!half)
+            {
+                var sum = (uint)(main + addend);
+                var carry = (sum - ((main ^ addend) & 0x0421)) & 0x8420;
+                return (ushort)((sum - carry) | (carry - (carry >> 5)));
+            }
+
+            return (ushort)((main + addend - ((main ^ addend) & 0x0421)) >> 1);
         }
 
-        return (byte)Math.Min(byte.MaxValue, result);
+        var difference = (uint)main - addend + 0x8420;
+        var borrow = (difference - ((main ^ addend) & 0x8420)) & 0x8420;
+        if (!half)
+        {
+            return (ushort)((difference - borrow) & (borrow - (borrow >> 5)));
+        }
+
+        return (ushort)((((difference - borrow) & (borrow - (borrow >> 5))) & 0x7BDE) >> 1);
     }
 
-    private static uint ReadColorWord(ushort color, int brightness)
+    private static ushort ReadColorValue(ReadOnlySpan<byte> colorRam, int colorIndex)
     {
+        var address = (colorIndex * 2) & 0x1FF;
+        return (ushort)(colorRam[address] | ((colorRam[address + 1] & 0x7F) << 8));
+    }
+
+    private static uint ReadColor(ushort color, int brightness, bool forcedBlank)
+    {
+        if (forcedBlank)
+        {
+            return 0xFF000000;
+        }
+
         var red = ScaleChannel(color & 0x1F, brightness);
         var green = ScaleChannel((color >> 5) & 0x1F, brightness);
         var blue = ScaleChannel((color >> 10) & 0x1F, brightness);
@@ -341,27 +366,28 @@ public static class SnesVideoRenderer
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
+        Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
         ReadOnlySpan<byte> colorRam)
     {
         var bg3HighPriority = (hardware.PpuRegisters.Span[0x05] & 0x08) != 0;
-        DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawObjectsIfEnabled(hardware, screenEnable, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
         if (!bg3HighPriority)
         {
-            DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+            DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
         }
 
-        DrawObjectsIfEnabled(hardware, screenEnable, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, screenEnable, 1, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, screenEnable, 0, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawObjectsIfEnabled(hardware, screenEnable, priority: 2, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, screenEnable, 1, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, screenEnable, 0, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawObjectsIfEnabled(hardware, screenEnable, priority: 3, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 1, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 0, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 2, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 1, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 0, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 3, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
         if (bg3HighPriority)
         {
-            DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+            DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
         }
     }
 
@@ -374,6 +400,7 @@ public static class SnesVideoRenderer
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
+        Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
         ReadOnlySpan<byte> colorRam)
     {
@@ -382,7 +409,7 @@ public static class SnesVideoRenderer
             return;
         }
 
-        DrawBackground(hardware, background, mode: 1, priority, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawBackground(hardware, background, mode: 1, priority, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
     }
 
     private static void DrawObjectsIfEnabled(
@@ -393,12 +420,13 @@ public static class SnesVideoRenderer
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
+        Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
         ReadOnlySpan<byte> colorRam)
     {
         if ((screenEnable & 0x10) != 0)
         {
-            DrawObjects(hardware, priority, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+            DrawObjects(hardware, priority, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam);
         }
     }
 
@@ -409,6 +437,7 @@ public static class SnesVideoRenderer
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
+        Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
         ReadOnlySpan<byte> colorRam)
     {
@@ -477,9 +506,11 @@ public static class SnesVideoRenderer
                         continue;
                     }
 
-                    var color = ReadColor(colorRam, 128 + (palette * 16) + colorIndex, brightness, forcedBlank: false);
+                    var colorValue = ReadColorValue(colorRam, 128 + (palette * 16) + colorIndex);
+                    var color = ReadColor(colorValue, brightness, forcedBlank: false);
                     var pixelIndex = (screenY * Width) + screenX;
                     WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, color);
+                    pixelColors[pixelIndex] = colorValue;
                     pixelSources[pixelIndex] = palette >= 4 ? (byte)5 : (byte)6;
                 }
             }
@@ -510,6 +541,7 @@ public static class SnesVideoRenderer
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
+        Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
         ReadOnlySpan<byte> colorRam)
     {
@@ -584,9 +616,11 @@ public static class SnesVideoRenderer
                 var paletteGroup = (tileEntry >> 10) & 0x07;
                 var modeZeroPaletteBase = mode == 0 ? background * 32 : 0;
                 var colorIndex = modeZeroPaletteBase + (paletteGroup * (1 << bitsPerPixel)) + paletteIndex;
-                var color = ReadColor(colorRam, colorIndex, brightness, forcedBlank: false);
+                var colorValue = ReadColorValue(colorRam, colorIndex);
+                var color = ReadColor(colorValue, brightness, forcedBlank: false);
                 var pixelIndex = (screenY * Width) + screenX;
                 WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, color);
+                pixelColors[pixelIndex] = colorValue;
                 pixelSources[pixelIndex] = (byte)(background + 1);
             }
         }
@@ -618,21 +652,6 @@ public static class SnesVideoRenderer
         }
 
         return colorIndex;
-    }
-
-    private static uint ReadColor(ReadOnlySpan<byte> colorRam, int colorIndex, int brightness, bool forcedBlank)
-    {
-        if (forcedBlank)
-        {
-            return 0xFF000000;
-        }
-
-        var address = (colorIndex * 2) & 0x1FF;
-        var color = colorRam[address] | ((colorRam[address + 1] & 0x7F) << 8);
-        var red = ScaleChannel(color & 0x1F, brightness);
-        var green = ScaleChannel((color >> 5) & 0x1F, brightness);
-        var blue = ScaleChannel((color >> 10) & 0x1F, brightness);
-        return 0xFF000000u | ((uint)blue << 16) | ((uint)green << 8) | (uint)red;
     }
 
     private static int ScaleChannel(int channel, int brightness)
