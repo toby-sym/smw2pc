@@ -1,10 +1,16 @@
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using SDL3;
+using Smw2Pc.Core.Cpu;
+using Smw2Pc.Core.Machine;
 using Smw2Pc.Core.Rom;
 
 internal static class Program
 {
+    private const int WindowWidth = 800;
+    private const int WindowHeight = 736;
+    private const int InstructionsPerFrame = 18000;
+
     private static readonly ConcurrentQueue<FileDialogResult> PendingFileDialogResults = new();
     private static readonly SDL.DialogFileCallback RomFileDialogCallback = OnRomFileDialogCompleted;
 
@@ -18,8 +24,8 @@ internal static class Program
 
         if (!SDL.CreateWindowAndRenderer(
                 "SMW2PC",
-                640,
-                480,
+                WindowWidth,
+                WindowHeight,
                 0,
                 out var window,
                 out var renderer))
@@ -29,12 +35,32 @@ internal static class Program
             return 1;
         }
 
+        var gameTexture = SDL.CreateTexture(
+            renderer,
+            SDL.PixelFormat.ABGR8888,
+            SDL.TextureAccess.Streaming,
+            SnesVideoRenderer.Width,
+            SnesVideoRenderer.Height);
+        if (gameTexture == IntPtr.Zero)
+        {
+            Console.Error.WriteLine($"Could not create the game texture: {SDL.GetError()}");
+            SDL.DestroyRenderer(renderer);
+            SDL.DestroyWindow(window);
+            SDL.Quit();
+            return 1;
+        }
+
+        SDL.SetTextureScaleMode(gameTexture, SDL.ScaleMode.Nearest);
         SDL.SetRenderVSync(renderer, 1);
 
         var running = true;
-        var statusMessage = "Choose .sfc/.smc or ZIP (one ROM only).";
+        var statusMessage = "Choose an .sfc/.smc ROM or a ZIP containing one ROM.";
         SnesRom? loadedRom = null;
-        var openButton = new SDL.FRect { X = 24, Y = 24, W = 192, H = 48 };
+        NativeCpuRunner? cpuRunner = null;
+        SnesControllerButtons controllerButtons = SnesControllerButtons.None;
+        var frameBuffer = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
+        var gameArea = new SDL.FRect { X = 16, Y = 16, W = 768, H = 672 };
+        var openButton = new SDL.FRect { X = 16, Y = 696, W = 112, H = 28 };
 
         while (running)
         {
@@ -58,6 +84,20 @@ internal static class Program
                         null!,
                         false);
                 }
+                else if (eventType is SDL.EventType.KeyDown or SDL.EventType.KeyUp)
+                {
+                    var isDown = eventType == SDL.EventType.KeyDown;
+                    var key = @event.Key.Key;
+                    if (isDown && key == SDL.Keycode.F1)
+                    {
+                        ShowRomFileDialog(window);
+                    }
+                    else
+                    {
+                        controllerButtons = SetButtonForKey(controllerButtons, key, isDown);
+                        cpuRunner?.MemoryBus.Hardware.SetControllerButtons(0, controllerButtons);
+                    }
+                }
             }
 
             while (PendingFileDialogResults.TryDequeue(out var dialogResult))
@@ -77,41 +117,71 @@ internal static class Program
                 try
                 {
                     loadedRom = SnesRom.Load(dialogResult.Path);
-                    statusMessage = "ROM loaded. Game execution is not implemented yet.";
+                    var memoryBus = new SnesMemoryBus(loadedRom);
+                    cpuRunner = new NativeCpuRunner(memoryBus);
+                    memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
+                    statusMessage = $"Running {loadedRom.Header.Title}";
                 }
                 catch (Exception exception) when (
-                    exception is IOException or UnauthorizedAccessException or ArgumentException)
+                    exception is IOException
+                        or UnauthorizedAccessException
+                        or ArgumentException
+                        or NotSupportedException)
                 {
                     loadedRom = null;
+                    cpuRunner = null;
                     statusMessage = exception.Message;
+                }
+            }
+
+            if (cpuRunner is not null)
+            {
+                try
+                {
+                    cpuRunner.Run(InstructionsPerFrame);
+                    SnesVideoRenderer.RenderFrame(cpuRunner.MemoryBus.Hardware, frameBuffer);
+                    if (!SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, SnesVideoRenderer.Width * SnesVideoRenderer.BytesPerPixel))
+                    {
+                        statusMessage = $"Could not update the game frame: {SDL.GetError()}";
+                    }
+                }
+                catch (Exception exception) when (exception is NotSupportedException or InvalidOperationException)
+                {
+                    statusMessage = $"Execution stopped at {cpuRunner.State.ProgramBank:X2}:{cpuRunner.State.ProgramCounter:X4}: {exception.Message}";
+                    cpuRunner = null;
                 }
             }
 
             SDL.SetRenderDrawColor(renderer, 24, 28, 40, 255);
             SDL.RenderClear(renderer);
 
+            if (cpuRunner is not null)
+            {
+                SDL.RenderTexture(renderer, gameTexture, IntPtr.Zero, in gameArea);
+            }
+            else if (loadedRom is not null)
+            {
+                SDL.RenderTexture(renderer, gameTexture, IntPtr.Zero, in gameArea);
+            }
+            else
+            {
+                SDL.SetRenderDrawColor(renderer, 16, 20, 30, 255);
+                SDL.RenderFillRect(renderer, in gameArea);
+                SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                SDL.RenderDebugText(renderer, 32, 40, "SMW2PC");
+                SDL.RenderDebugText(renderer, 32, 64, "Open a Super Nintendo ROM to start.");
+            }
+
             SDL.SetRenderDrawColor(renderer, 52, 86, 132, 255);
             SDL.RenderFillRect(renderer, in openButton);
             SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
-            SDL.RenderDebugText(renderer, 40, 40, "Open ROM");
-            SDL.RenderDebugText(renderer, 24, 96, statusMessage);
-
-            if (loadedRom is not null)
-            {
-                SDL.RenderDebugText(renderer, 24, 136, $"File: {loadedRom.FileName}");
-                SDL.RenderDebugText(renderer, 24, 160, $"Title: {loadedRom.Header.Title}");
-                SDL.RenderDebugText(renderer, 24, 184, $"ROM size: {loadedRom.SizeBytes:N0} bytes");
-                SDL.RenderDebugText(renderer, 24, 208, $"Map mode: 0x{loadedRom.Header.MapMode:X2}");
-                SDL.RenderDebugText(
-                    renderer,
-                    24,
-                    232,
-                    loadedRom.HasCopierHeader ? "512-byte copier header removed while loading." : "No copier header detected.");
-            }
+            SDL.RenderDebugText(renderer, 28, 704, "Open ROM");
+            SDL.RenderDebugText(renderer, 144, 704, $"{statusMessage}   Arrows move · Z jump · X run · Enter start · F1 open");
 
             SDL.RenderPresent(renderer);
         }
 
+        SDL.DestroyTexture(gameTexture);
         SDL.DestroyRenderer(renderer);
         SDL.DestroyWindow(window);
         SDL.Quit();
@@ -137,6 +207,43 @@ internal static class Program
         {
             PendingFileDialogResults.Enqueue(new FileDialogResult(path, null));
         }
+    }
+
+    private static void ShowRomFileDialog(IntPtr window)
+    {
+        SDL.ShowOpenFileDialog(
+            RomFileDialogCallback,
+            IntPtr.Zero,
+            window,
+            null!,
+            0,
+            null!,
+            false);
+    }
+
+    private static SnesControllerButtons SetButtonForKey(
+        SnesControllerButtons currentButtons,
+        SDL.Keycode key,
+        bool pressed)
+    {
+        var button = key switch
+        {
+            SDL.Keycode.Left => SnesControllerButtons.Left,
+            SDL.Keycode.Right => SnesControllerButtons.Right,
+            SDL.Keycode.Up => SnesControllerButtons.Up,
+            SDL.Keycode.Down => SnesControllerButtons.Down,
+            SDL.Keycode.Z => SnesControllerButtons.B,
+            SDL.Keycode.X => SnesControllerButtons.A,
+            SDL.Keycode.A => SnesControllerButtons.Y,
+            SDL.Keycode.S => SnesControllerButtons.X,
+            SDL.Keycode.Return => SnesControllerButtons.Start,
+            SDL.Keycode.RShift => SnesControllerButtons.Select,
+            SDL.Keycode.Q => SnesControllerButtons.L,
+            SDL.Keycode.W => SnesControllerButtons.R,
+            _ => SnesControllerButtons.None,
+        };
+
+        return pressed ? currentButtons | button : currentButtons & ~button;
     }
 
     private static bool IsInside(float x, float y, SDL.FRect rectangle)

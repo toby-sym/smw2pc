@@ -300,7 +300,6 @@ public sealed class SnesHardware
             var fixedAddress = (mode & 0x08) != 0;
             var decrementAddress = (mode & 0x10) != 0;
             var bToA = (mode & 0x80) != 0;
-
             for (var index = 0; index < transferSize; index++)
             {
                 var bAddress = (ushort)(0x2100 + ((bBusAddress + transferPattern[index % transferPattern.Length]) & 0xFF));

@@ -65,8 +65,8 @@ public static class SnesVideoRenderer
     {
         var registers = hardware.PpuRegisters.Span;
         var objectRam = hardware.ObjectAttributeMemory.Span;
-        var objectSizeMode = registers[1] & 0x07;
-        var tileBase = ((registers[1] >> 5) & 0x07) * 0x2000;
+        var objectSizeMode = (registers[1] >> 5) & 0x07;
+        var tileBase = (registers[1] & 0x07) * 0x4000;
         var (smallSize, largeSize) = GetObjectSizes(objectSizeMode);
 
         for (var objectIndex = 127; objectIndex >= 0; objectIndex--)

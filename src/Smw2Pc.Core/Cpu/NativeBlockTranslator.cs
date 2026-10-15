@@ -128,10 +128,14 @@ public sealed class NativeBlockTranslator
             or CpuAddressingMode.StackRelative
             or CpuAddressingMode.StackRelativeIndirectY
             or CpuAddressingMode.Relative => ReadProgramByte(memoryBus, state.ProgramBank, ref programCounter),
+            CpuAddressingMode.RelativeLong => ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter),
             CpuAddressingMode.Absolute
             or CpuAddressingMode.AbsoluteX
             or CpuAddressingMode.AbsoluteY
+            or CpuAddressingMode.AbsoluteIndirect
+            or CpuAddressingMode.AbsoluteIndexedIndirect
             or CpuAddressingMode.AbsoluteIndirectLong => ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter),
+            CpuAddressingMode.BlockMove => ReadBlockMoveBanks(memoryBus, state.ProgramBank, ref programCounter),
             CpuAddressingMode.Long
             or CpuAddressingMode.LongX => ReadLongAddress(memoryBus, state.ProgramBank, ref programCounter),
             _ => throw new ArgumentOutOfRangeException(nameof(addressingMode), addressingMode, "Unsupported addressing mode."),
@@ -169,6 +173,13 @@ public sealed class NativeBlockTranslator
         return (uint)(low | (middle << 8) | (high << 16));
     }
 
+    private static uint ReadBlockMoveBanks(SnesMemoryBus memoryBus, byte programBank, ref ushort programCounter)
+    {
+        var destinationBank = ReadProgramByte(memoryBus, programBank, ref programCounter);
+        var sourceBank = ReadProgramByte(memoryBus, programBank, ref programCounter);
+        return (uint)(destinationBank | (sourceBank << 8));
+    }
+
     private static byte ReadProgramByte(SnesMemoryBus memoryBus, byte programBank, ref ushort programCounter)
     {
         var address = ComposeAddress(programBank, programCounter);
@@ -181,13 +192,22 @@ public sealed class NativeBlockTranslator
     {
         return operation is CpuOperation.Stop
             or CpuOperation.JumpAbsolute
+            or CpuOperation.JumpIndirect
+            or CpuOperation.JumpAbsoluteIndexedIndirect
             or CpuOperation.JumpLong
             or CpuOperation.JumpIndirectLong
             or CpuOperation.CallAbsolute
+            or CpuOperation.CallAbsoluteIndexedIndirect
             or CpuOperation.CallLong
+            or CpuOperation.Break
+            or CpuOperation.Cop
             or CpuOperation.ReturnFromSubroutine
             or CpuOperation.ReturnFromSubroutineLong
             or CpuOperation.ReturnFromInterrupt
+            or CpuOperation.BranchLong
+            or CpuOperation.BlockMoveNegative
+            or CpuOperation.BlockMovePositive
+            or CpuOperation.WaitForInterrupt
             or CpuOperation.BranchPlus
             or CpuOperation.BranchMinus
             or CpuOperation.BranchOverflowClear

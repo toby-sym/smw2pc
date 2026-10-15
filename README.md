@@ -1,6 +1,7 @@
 # SMW2PC
 
-SDL3 desktop starter for the Super Mario World project.
+Native 65C816 translation runner for Super Mario World, with an SDL3 desktop
+front end.
 
 Run it with:
 
@@ -9,22 +10,22 @@ dotnet run --project src/Smw2Pc.Desktop
 ```
 
 Click **Open ROM** and choose a local `.sfc` or `.smc` file, or a `.zip` archive
-containing exactly one such file. SMW2PC checks the SNES cartridge header and
-displays the ROM title and metadata. The desktop application does not start the
-game yet.
+containing exactly one such file. SMW2PC checks the cartridge header, starts the
+translated CPU, and displays the SNES video output. Use the arrow keys to move,
+**Z** to jump, **X** to run, **Enter** for Start, **Right Shift** for Select,
+**A/S** for Y/X, and **Q/W** for L/R. Press **F1** to open another ROM.
 
-The core has an early native translation path for LoROM cartridges. It
-translates decoded 65C816 instruction blocks into .NET IL, which the .NET JIT
-compiles for the host CPU. The current instruction subset includes common loads,
-stores, arithmetic and logic, comparisons, branches, register transfers, stack
-operations, and status mode changes. Many 65C816 opcodes and substantial SNES
-hardware behavior are still unimplemented, so it cannot boot Super Mario World
-yet.
+The core translates 65C816 instruction blocks into .NET IL, which the .NET JIT
+compiles for the host CPU. It can execute code from cartridge ROM and copied
+WRAM. Super Mario World currently reaches its **Nintendo Presents** startup
+screen. The opcode table is still a subset of the documented 65C816 instruction
+set, and this is not yet a playable game runner.
 
-The hardware bus foundation routes PPU register access and VRAM transfers, APU
-ports, the WRAM data port, and controller input. It does not render video,
-generate audio, transfer DMA, or model SNES timing and interrupts. The game is
-not playable yet.
+The current hardware path includes basic LoROM/WRAM mapping, DMA, PPU tile and
+sprite output, controller input, frame-based VBlank/NMI, and a silent APU startup
+stub. It does not emulate the SPC700 audio processor or fully model PPU features,
+DMA timing, interrupts, and CPU cycle timing. Expect unsupported instructions or
+hardware behavior to stop execution before gameplay.
 
 Run the core tests with:
 

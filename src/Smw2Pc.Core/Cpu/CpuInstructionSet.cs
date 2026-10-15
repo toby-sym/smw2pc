@@ -5,10 +5,16 @@ internal enum CpuOperation
     Nop,
     Stop,
     JumpAbsolute,
+    JumpIndirect,
+    JumpAbsoluteIndexedIndirect,
     JumpLong,
     JumpIndirectLong,
     CallAbsolute,
+    CallAbsoluteIndexedIndirect,
     CallLong,
+    Break,
+    Cop,
+    BranchLong,
     ReturnFromSubroutine,
     ReturnFromSubroutineLong,
     ReturnFromInterrupt,
@@ -28,8 +34,15 @@ internal enum CpuOperation
     StoreX,
     StoreY,
     StoreZero,
+    TestAndSetBits,
+    TestAndResetBits,
+    BitTest,
     IncrementMemory,
     DecrementMemory,
+    ShiftMemoryLeft,
+    ShiftMemoryRight,
+    RotateMemoryLeft,
+    RotateMemoryRight,
     AddWithCarry,
     SubtractWithCarry,
     And,
@@ -84,6 +97,13 @@ internal enum CpuOperation
     PushDataBank,
     PullDataBank,
     PushProgramBank,
+    PushEffectiveAddress,
+    PushEffectiveIndirect,
+    PushEffectiveRelative,
+    BlockMoveNegative,
+    BlockMovePositive,
+    WaitForInterrupt,
+    Wdm,
 }
 
 internal enum CpuAddressingMode
@@ -99,6 +119,8 @@ internal enum CpuAddressingMode
     Absolute,
     AbsoluteX,
     AbsoluteY,
+    AbsoluteIndirect,
+    AbsoluteIndexedIndirect,
     Long,
     LongX,
     AbsoluteIndirectLong,
@@ -110,6 +132,8 @@ internal enum CpuAddressingMode
     StackRelative,
     StackRelativeIndirectY,
     Relative,
+    RelativeLong,
+    BlockMove,
 }
 
 internal readonly record struct CpuInstructionDefinition(
@@ -130,10 +154,17 @@ internal static class CpuInstructionSet
         var definitions = new Dictionary<byte, CpuInstructionDefinition>();
         Add(definitions, CpuOperation.Nop, CpuAddressingMode.Implied, 0xEA);
         Add(definitions, CpuOperation.Stop, CpuAddressingMode.Implied, 0xDB);
+        Add(definitions, CpuOperation.WaitForInterrupt, CpuAddressingMode.Implied, 0xCB);
+        Add(definitions, CpuOperation.Wdm, CpuAddressingMode.ImmediateByte, 0x42);
+        Add(definitions, CpuOperation.Break, CpuAddressingMode.ImmediateByte, 0x00);
+        Add(definitions, CpuOperation.Cop, CpuAddressingMode.ImmediateByte, 0x02);
         Add(definitions, CpuOperation.JumpAbsolute, CpuAddressingMode.Absolute, 0x4C);
+        Add(definitions, CpuOperation.JumpIndirect, CpuAddressingMode.AbsoluteIndirect, 0x6C);
+        Add(definitions, CpuOperation.JumpAbsoluteIndexedIndirect, CpuAddressingMode.AbsoluteIndexedIndirect, 0x7C);
         Add(definitions, CpuOperation.JumpLong, CpuAddressingMode.Long, 0x5C);
         Add(definitions, CpuOperation.JumpIndirectLong, CpuAddressingMode.AbsoluteIndirectLong, 0xDC);
         Add(definitions, CpuOperation.CallAbsolute, CpuAddressingMode.Absolute, 0x20);
+        Add(definitions, CpuOperation.CallAbsoluteIndexedIndirect, CpuAddressingMode.AbsoluteIndexedIndirect, 0xFC);
         Add(definitions, CpuOperation.CallLong, CpuAddressingMode.Long, 0x22);
         Add(definitions, CpuOperation.ReturnFromSubroutine, CpuAddressingMode.Implied, 0x60);
         Add(definitions, CpuOperation.ReturnFromSubroutineLong, CpuAddressingMode.Implied, 0x6B);
@@ -148,6 +179,9 @@ internal static class CpuInstructionSet
         Add(definitions, CpuOperation.BranchNotEqual, CpuAddressingMode.Relative, 0xD0);
         Add(definitions, CpuOperation.BranchEqual, CpuAddressingMode.Relative, 0xF0);
         Add(definitions, CpuOperation.BranchAlways, CpuAddressingMode.Relative, 0x80);
+        Add(definitions, CpuOperation.BranchLong, CpuAddressingMode.RelativeLong, 0x82);
+        Add(definitions, CpuOperation.BlockMovePositive, CpuAddressingMode.BlockMove, 0x44);
+        Add(definitions, CpuOperation.BlockMoveNegative, CpuAddressingMode.BlockMove, 0x54);
 
         Add(definitions, CpuOperation.LoadAccumulator, CpuAddressingMode.ImmediateAccumulator, 0xA9);
         Add(definitions, CpuOperation.LoadAccumulator, CpuAddressingMode.DirectPage, 0xA5);
@@ -200,6 +234,15 @@ internal static class CpuInstructionSet
         Add(definitions, CpuOperation.StoreZero, CpuAddressingMode.DirectPageX, 0x74);
         Add(definitions, CpuOperation.StoreZero, CpuAddressingMode.Absolute, 0x9C);
         Add(definitions, CpuOperation.StoreZero, CpuAddressingMode.AbsoluteX, 0x9E);
+        Add(definitions, CpuOperation.TestAndSetBits, CpuAddressingMode.DirectPage, 0x04);
+        Add(definitions, CpuOperation.TestAndSetBits, CpuAddressingMode.Absolute, 0x0C);
+        Add(definitions, CpuOperation.TestAndResetBits, CpuAddressingMode.DirectPage, 0x14);
+        Add(definitions, CpuOperation.TestAndResetBits, CpuAddressingMode.Absolute, 0x1C);
+        Add(definitions, CpuOperation.BitTest, CpuAddressingMode.DirectPage, 0x24);
+        Add(definitions, CpuOperation.BitTest, CpuAddressingMode.DirectPageX, 0x34);
+        Add(definitions, CpuOperation.BitTest, CpuAddressingMode.Absolute, 0x2C);
+        Add(definitions, CpuOperation.BitTest, CpuAddressingMode.AbsoluteX, 0x3C);
+        Add(definitions, CpuOperation.BitTest, CpuAddressingMode.ImmediateAccumulator, 0x89);
         Add(definitions, CpuOperation.IncrementMemory, CpuAddressingMode.DirectPage, 0xE6);
         Add(definitions, CpuOperation.IncrementMemory, CpuAddressingMode.DirectPageX, 0xF6);
         Add(definitions, CpuOperation.IncrementMemory, CpuAddressingMode.Absolute, 0xEE);
@@ -208,6 +251,22 @@ internal static class CpuInstructionSet
         Add(definitions, CpuOperation.DecrementMemory, CpuAddressingMode.DirectPageX, 0xD6);
         Add(definitions, CpuOperation.DecrementMemory, CpuAddressingMode.Absolute, 0xCE);
         Add(definitions, CpuOperation.DecrementMemory, CpuAddressingMode.AbsoluteX, 0xDE);
+        Add(definitions, CpuOperation.ShiftMemoryLeft, CpuAddressingMode.DirectPage, 0x06);
+        Add(definitions, CpuOperation.ShiftMemoryLeft, CpuAddressingMode.DirectPageX, 0x16);
+        Add(definitions, CpuOperation.ShiftMemoryLeft, CpuAddressingMode.Absolute, 0x0E);
+        Add(definitions, CpuOperation.ShiftMemoryLeft, CpuAddressingMode.AbsoluteX, 0x1E);
+        Add(definitions, CpuOperation.RotateMemoryLeft, CpuAddressingMode.DirectPage, 0x26);
+        Add(definitions, CpuOperation.RotateMemoryLeft, CpuAddressingMode.DirectPageX, 0x36);
+        Add(definitions, CpuOperation.RotateMemoryLeft, CpuAddressingMode.Absolute, 0x2E);
+        Add(definitions, CpuOperation.RotateMemoryLeft, CpuAddressingMode.AbsoluteX, 0x3E);
+        Add(definitions, CpuOperation.ShiftMemoryRight, CpuAddressingMode.DirectPage, 0x46);
+        Add(definitions, CpuOperation.ShiftMemoryRight, CpuAddressingMode.DirectPageX, 0x56);
+        Add(definitions, CpuOperation.ShiftMemoryRight, CpuAddressingMode.Absolute, 0x4E);
+        Add(definitions, CpuOperation.ShiftMemoryRight, CpuAddressingMode.AbsoluteX, 0x5E);
+        Add(definitions, CpuOperation.RotateMemoryRight, CpuAddressingMode.DirectPage, 0x66);
+        Add(definitions, CpuOperation.RotateMemoryRight, CpuAddressingMode.DirectPageX, 0x76);
+        Add(definitions, CpuOperation.RotateMemoryRight, CpuAddressingMode.Absolute, 0x6E);
+        Add(definitions, CpuOperation.RotateMemoryRight, CpuAddressingMode.AbsoluteX, 0x7E);
 
         AddAccumulatorFamily(definitions, CpuOperation.Or, 0x09, 0x05, 0x15, 0x0D, 0x1D, 0x19);
         AddAccumulatorFamily(definitions, CpuOperation.And, 0x29, 0x25, 0x35, 0x2D, 0x3D, 0x39);
@@ -293,6 +352,9 @@ internal static class CpuInstructionSet
         Add(definitions, CpuOperation.PushDataBank, CpuAddressingMode.Implied, 0x8B);
         Add(definitions, CpuOperation.PullDataBank, CpuAddressingMode.Implied, 0xAB);
         Add(definitions, CpuOperation.PushProgramBank, CpuAddressingMode.Implied, 0x4B);
+        Add(definitions, CpuOperation.PushEffectiveAddress, CpuAddressingMode.Absolute, 0xF4);
+        Add(definitions, CpuOperation.PushEffectiveIndirect, CpuAddressingMode.DirectPage, 0xD4);
+        Add(definitions, CpuOperation.PushEffectiveRelative, CpuAddressingMode.RelativeLong, 0x62);
         Add(definitions, CpuOperation.PushDirectPage, CpuAddressingMode.Implied, 0x0B);
         Add(definitions, CpuOperation.PullDirectPage, CpuAddressingMode.Implied, 0x2B);
 

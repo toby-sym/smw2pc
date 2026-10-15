@@ -28,8 +28,21 @@ internal static class CpuInstructionExecutor
                 state.ProgramCounter = nextProgramCounter;
                 state.Halted = true;
                 return;
+            case CpuOperation.WaitForInterrupt:
+                state.ProgramCounter = nextProgramCounter;
+                state.WaitingForInterrupt = true;
+                return;
+            case CpuOperation.Wdm:
+                return;
             case CpuOperation.JumpAbsolute:
                 state.ProgramCounter = (ushort)operand;
+                return;
+            case CpuOperation.JumpIndirect:
+                state.ProgramCounter = memoryBus.ReadWordInBank((ushort)operand);
+                return;
+            case CpuOperation.JumpAbsoluteIndexedIndirect:
+                var jumpPointer = (ushort)((ushort)operand + (indexesAre8Bit ? state.X & ByteMask : state.X));
+                state.ProgramCounter = memoryBus.ReadWordInBank(((uint)state.ProgramBank << 16) | jumpPointer);
                 return;
             case CpuOperation.JumpLong:
                 state.ProgramCounter = (ushort)operand;
@@ -45,6 +58,11 @@ internal static class CpuInstructionExecutor
             case CpuOperation.CallAbsolute:
                 PushValue(state, memoryBus, unchecked((ushort)(nextProgramCounter - 1)), is8Bit: false);
                 state.ProgramCounter = (ushort)operand;
+                return;
+            case CpuOperation.CallAbsoluteIndexedIndirect:
+                PushValue(state, memoryBus, unchecked((ushort)(nextProgramCounter - 1)), is8Bit: false);
+                var callPointer = (ushort)((ushort)operand + (indexesAre8Bit ? state.X & ByteMask : state.X));
+                state.ProgramCounter = memoryBus.ReadWordInBank(((uint)state.ProgramBank << 16) | callPointer);
                 return;
             case CpuOperation.CallLong:
                 PushByte(state, memoryBus, state.ProgramBank);
@@ -68,6 +86,21 @@ internal static class CpuInstructionExecutor
                     state.ProgramBank = PopByte(state, memoryBus);
                 }
 
+                return;
+            case CpuOperation.Break:
+                EnterSoftwareInterrupt(state, memoryBus, nextProgramCounter, state.EmulationMode ? 0xFFFEu : 0xFFE6u);
+                return;
+            case CpuOperation.Cop:
+                EnterSoftwareInterrupt(state, memoryBus, nextProgramCounter, state.EmulationMode ? 0xFFF4u : 0xFFE4u);
+                return;
+            case CpuOperation.BranchLong:
+                state.ProgramCounter = unchecked((ushort)(nextProgramCounter + (short)operand));
+                return;
+            case CpuOperation.BlockMoveNegative:
+                MoveBlock(state, memoryBus, operand, increment: false);
+                return;
+            case CpuOperation.BlockMovePositive:
+                MoveBlock(state, memoryBus, operand, increment: true);
                 return;
             case CpuOperation.BranchPlus:
             case CpuOperation.BranchMinus:
@@ -105,11 +138,32 @@ internal static class CpuInstructionExecutor
             case CpuOperation.StoreZero:
                 WriteOperand(state, memoryBus, addressingMode, operand, 0, accumulatorIs8Bit);
                 return;
+            case CpuOperation.TestAndSetBits:
+                TestAndModifyBits(state, memoryBus, addressingMode, operand, accumulator, accumulatorIs8Bit, setBits: true);
+                return;
+            case CpuOperation.TestAndResetBits:
+                TestAndModifyBits(state, memoryBus, addressingMode, operand, accumulator, accumulatorIs8Bit, setBits: false);
+                return;
+            case CpuOperation.BitTest:
+                BitTest(state, memoryBus, addressingMode, operand, accumulator, accumulatorIs8Bit);
+                return;
             case CpuOperation.IncrementMemory:
                 ModifyMemory(state, memoryBus, addressingMode, operand, accumulatorIs8Bit, increment: true);
                 return;
             case CpuOperation.DecrementMemory:
                 ModifyMemory(state, memoryBus, addressingMode, operand, accumulatorIs8Bit, increment: false);
+                return;
+            case CpuOperation.ShiftMemoryLeft:
+                ShiftMemory(state, memoryBus, addressingMode, operand, accumulatorIs8Bit, left: true, rotate: false);
+                return;
+            case CpuOperation.ShiftMemoryRight:
+                ShiftMemory(state, memoryBus, addressingMode, operand, accumulatorIs8Bit, left: false, rotate: false);
+                return;
+            case CpuOperation.RotateMemoryLeft:
+                ShiftMemory(state, memoryBus, addressingMode, operand, accumulatorIs8Bit, left: true, rotate: true);
+                return;
+            case CpuOperation.RotateMemoryRight:
+                ShiftMemory(state, memoryBus, addressingMode, operand, accumulatorIs8Bit, left: false, rotate: true);
                 return;
             case CpuOperation.And:
                 SetAccumulator(state, (ushort)(accumulator & ReadOperand(state, memoryBus, addressingMode, operand, accumulatorIs8Bit)), accumulatorIs8Bit);
@@ -287,6 +341,16 @@ internal static class CpuInstructionExecutor
             case CpuOperation.PushProgramBank:
                 PushByte(state, memoryBus, state.ProgramBank);
                 return;
+            case CpuOperation.PushEffectiveAddress:
+                PushValue(state, memoryBus, (ushort)operand, is8Bit: false);
+                return;
+            case CpuOperation.PushEffectiveIndirect:
+                var directPagePointer = (ushort)(state.DirectPage + (byte)operand);
+                PushValue(state, memoryBus, memoryBus.ReadWordInBank(directPagePointer), is8Bit: false);
+                return;
+            case CpuOperation.PushEffectiveRelative:
+                PushValue(state, memoryBus, unchecked((ushort)(nextProgramCounter + (short)operand)), is8Bit: false);
+                return;
             case CpuOperation.PushDirectPage:
                 PushValue(state, memoryBus, state.DirectPage, is8Bit: false);
                 return;
@@ -370,6 +434,121 @@ internal static class CpuInstructionExecutor
         var result = (ushort)((value + (increment ? 1 : -1)) & mask);
         WriteOperand(state, memoryBus, addressingMode, operand, result, is8Bit);
         SetNegativeZero(state, result, is8Bit);
+    }
+
+    private static void TestAndModifyBits(
+        CpuState state,
+        SnesMemoryBus memoryBus,
+        CpuAddressingMode addressingMode,
+        uint operand,
+        ushort accumulator,
+        bool is8Bit,
+        bool setBits)
+    {
+        var value = ReadOperand(state, memoryBus, addressingMode, operand, is8Bit);
+        SetFlag(state, CpuStatusFlags.Zero, (value & accumulator) == 0);
+        var result = setBits ? (ushort)(value | accumulator) : (ushort)(value & ~accumulator);
+        WriteOperand(state, memoryBus, addressingMode, operand, result, is8Bit);
+    }
+
+    private static void BitTest(
+        CpuState state,
+        SnesMemoryBus memoryBus,
+        CpuAddressingMode addressingMode,
+        uint operand,
+        ushort accumulator,
+        bool is8Bit)
+    {
+        var value = ReadOperand(state, memoryBus, addressingMode, operand, is8Bit);
+        SetFlag(state, CpuStatusFlags.Zero, (value & accumulator) == 0);
+
+        var immediate8Bit = addressingMode == CpuAddressingMode.ImmediateAccumulator && is8Bit;
+        if (!immediate8Bit)
+        {
+            var sign = is8Bit ? 0x80 : 0x8000;
+            SetFlag(state, CpuStatusFlags.Negative, (value & sign) != 0);
+            SetFlag(state, CpuStatusFlags.Overflow, (value & (sign >> 1)) != 0);
+        }
+    }
+
+    private static void ShiftMemory(
+        CpuState state,
+        SnesMemoryBus memoryBus,
+        CpuAddressingMode addressingMode,
+        uint operand,
+        bool is8Bit,
+        bool left,
+        bool rotate)
+    {
+        var mask = is8Bit ? ByteMask : ushort.MaxValue;
+        var sign = is8Bit ? 0x80 : 0x8000;
+        var value = ReadOperand(state, memoryBus, addressingMode, operand, is8Bit) & mask;
+        var carryIn = (state.Status & CpuStatusFlags.Carry) != 0;
+        int result;
+        bool carryOut;
+
+        if (left)
+        {
+            carryOut = (value & sign) != 0;
+            result = (value << 1) & mask;
+            if (rotate && carryIn)
+            {
+                result |= 1;
+            }
+        }
+        else
+        {
+            carryOut = (value & 1) != 0;
+            result = value >> 1;
+            if (rotate && carryIn)
+            {
+                result |= sign;
+            }
+        }
+
+        SetCarry(state, carryOut);
+        WriteOperand(state, memoryBus, addressingMode, operand, (ushort)result, is8Bit);
+        SetNegativeZero(state, (ushort)result, is8Bit);
+    }
+
+    private static void MoveBlock(CpuState state, SnesMemoryBus memoryBus, uint operand, bool increment)
+    {
+        var destinationBank = (byte)operand;
+        var sourceBank = (byte)(operand >> 8);
+        var indexMask = state.AreIndexes8Bit ? ByteMask : ushort.MaxValue;
+        var byteCount = (uint)state.Accumulator + 1;
+        for (var moved = 0u; moved < byteCount; moved++)
+        {
+            var sourceAddress = ((uint)sourceBank << 16) | state.X;
+            var destinationAddress = ((uint)destinationBank << 16) | state.Y;
+            memoryBus.WriteByte(destinationAddress, memoryBus.ReadByte(sourceAddress));
+            var delta = increment ? 1 : -1;
+            state.X = (ushort)((state.X + delta) & indexMask);
+            state.Y = (ushort)((state.Y + delta) & indexMask);
+        }
+
+        state.Accumulator = ushort.MaxValue;
+        state.DataBank = destinationBank;
+    }
+
+    private static void EnterSoftwareInterrupt(
+        CpuState state,
+        SnesMemoryBus memoryBus,
+        ushort nextProgramCounter,
+        uint vector)
+    {
+        if (!state.EmulationMode)
+        {
+            PushByte(state, memoryBus, state.ProgramBank);
+        }
+
+        PushByte(state, memoryBus, (byte)(nextProgramCounter >> 8));
+        PushByte(state, memoryBus, (byte)nextProgramCounter);
+        PushByte(state, memoryBus, state.Status);
+        state.Status |= CpuStatusFlags.InterruptDisable;
+        state.Status &= unchecked((byte)~CpuStatusFlags.Decimal);
+        state.ProgramBank = 0;
+        state.ProgramCounter = memoryBus.ReadWordInBank(vector);
     }
 
     private static uint GetEffectiveAddress(
