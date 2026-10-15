@@ -82,14 +82,14 @@ public sealed class NativeBlockTranslator
     private static void EmitInstruction(
         ILGenerator il,
         CpuInstructionDefinition definition,
-        ushort operand,
+        uint operand,
         ushort nextProgramCounter)
     {
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldarg_1);
         il.Emit(OpCodes.Ldc_I4, (int)definition.Operation);
         il.Emit(OpCodes.Ldc_I4, (int)definition.AddressingMode);
-        il.Emit(OpCodes.Ldc_I4, operand);
+        il.Emit(OpCodes.Ldc_I4, unchecked((int)operand));
         il.Emit(OpCodes.Ldc_I4, nextProgramCounter);
         il.Emit(OpCodes.Call, ExecuteInstructionMethod);
     }
@@ -102,7 +102,7 @@ public sealed class NativeBlockTranslator
         il.Emit(OpCodes.Stfld, ProgramCounterField);
     }
 
-    private static ushort ReadOperand(
+    private static uint ReadOperand(
         SnesMemoryBus memoryBus,
         CpuState state,
         CpuAddressingMode addressingMode,
@@ -129,6 +129,8 @@ public sealed class NativeBlockTranslator
             CpuAddressingMode.Absolute
             or CpuAddressingMode.AbsoluteX
             or CpuAddressingMode.AbsoluteY => ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter),
+            CpuAddressingMode.Long
+            or CpuAddressingMode.LongX => ReadLongAddress(memoryBus, state.ProgramBank, ref programCounter),
             _ => throw new ArgumentOutOfRangeException(nameof(addressingMode), addressingMode, "Unsupported addressing mode."),
         };
     }
@@ -154,6 +156,14 @@ public sealed class NativeBlockTranslator
         var low = ReadProgramByte(memoryBus, programBank, ref programCounter);
         var high = ReadProgramByte(memoryBus, programBank, ref programCounter);
         return (ushort)(low | (high << 8));
+    }
+
+    private static uint ReadLongAddress(SnesMemoryBus memoryBus, byte programBank, ref ushort programCounter)
+    {
+        var low = ReadProgramByte(memoryBus, programBank, ref programCounter);
+        var middle = ReadProgramByte(memoryBus, programBank, ref programCounter);
+        var high = ReadProgramByte(memoryBus, programBank, ref programCounter);
+        return (uint)(low | (middle << 8) | (high << 16));
     }
 
     private static byte ReadProgramByte(SnesMemoryBus memoryBus, byte programBank, ref ushort programCounter)

@@ -91,6 +91,8 @@ internal enum CpuAddressingMode
     Absolute,
     AbsoluteX,
     AbsoluteY,
+    Long,
+    LongX,
     Relative,
 }
 
@@ -132,6 +134,8 @@ internal static class CpuInstructionSet
         Add(definitions, CpuOperation.LoadAccumulator, CpuAddressingMode.Absolute, 0xAD);
         Add(definitions, CpuOperation.LoadAccumulator, CpuAddressingMode.AbsoluteX, 0xBD);
         Add(definitions, CpuOperation.LoadAccumulator, CpuAddressingMode.AbsoluteY, 0xB9);
+        Add(definitions, CpuOperation.LoadAccumulator, CpuAddressingMode.Long, 0xAF);
+        Add(definitions, CpuOperation.LoadAccumulator, CpuAddressingMode.LongX, 0xBF);
 
         Add(definitions, CpuOperation.LoadX, CpuAddressingMode.ImmediateIndex, 0xA2);
         Add(definitions, CpuOperation.LoadX, CpuAddressingMode.DirectPage, 0xA6);
@@ -149,6 +153,8 @@ internal static class CpuInstructionSet
         Add(definitions, CpuOperation.StoreAccumulator, CpuAddressingMode.Absolute, 0x8D);
         Add(definitions, CpuOperation.StoreAccumulator, CpuAddressingMode.AbsoluteX, 0x9D);
         Add(definitions, CpuOperation.StoreAccumulator, CpuAddressingMode.AbsoluteY, 0x99);
+        Add(definitions, CpuOperation.StoreAccumulator, CpuAddressingMode.Long, 0x8F);
+        Add(definitions, CpuOperation.StoreAccumulator, CpuAddressingMode.LongX, 0x9F);
         Add(definitions, CpuOperation.StoreX, CpuAddressingMode.DirectPage, 0x86);
         Add(definitions, CpuOperation.StoreX, CpuAddressingMode.DirectPageY, 0x96);
         Add(definitions, CpuOperation.StoreX, CpuAddressingMode.Absolute, 0x8E);
@@ -166,6 +172,12 @@ internal static class CpuInstructionSet
         AddAccumulatorFamily(definitions, CpuOperation.AddWithCarry, 0x69, 0x65, 0x75, 0x6D, 0x7D, 0x79);
         AddAccumulatorFamily(definitions, CpuOperation.SubtractWithCarry, 0xE9, 0xE5, 0xF5, 0xED, 0xFD, 0xF9);
         AddAccumulatorFamily(definitions, CpuOperation.CompareAccumulator, 0xC9, 0xC5, 0xD5, 0xCD, 0xDD, 0xD9);
+        AddLongAccumulatorModes(definitions, CpuOperation.Or, 0x0F, 0x1F);
+        AddLongAccumulatorModes(definitions, CpuOperation.And, 0x2F, 0x3F);
+        AddLongAccumulatorModes(definitions, CpuOperation.ExclusiveOr, 0x4F, 0x5F);
+        AddLongAccumulatorModes(definitions, CpuOperation.AddWithCarry, 0x6F, 0x7F);
+        AddLongAccumulatorModes(definitions, CpuOperation.SubtractWithCarry, 0xEF, 0xFF);
+        AddLongAccumulatorModes(definitions, CpuOperation.CompareAccumulator, 0xCF, 0xDF);
         Add(definitions, CpuOperation.CompareX, CpuAddressingMode.ImmediateIndex, 0xE0);
         Add(definitions, CpuOperation.CompareX, CpuAddressingMode.DirectPage, 0xE4);
         Add(definitions, CpuOperation.CompareX, CpuAddressingMode.Absolute, 0xEC);
@@ -241,6 +253,16 @@ internal static class CpuInstructionSet
         Add(definitions, operation, CpuAddressingMode.Absolute, absolute);
         Add(definitions, operation, CpuAddressingMode.AbsoluteX, absoluteX);
         Add(definitions, operation, CpuAddressingMode.AbsoluteY, absoluteY);
+    }
+
+    private static void AddLongAccumulatorModes(
+        IDictionary<byte, CpuInstructionDefinition> definitions,
+        CpuOperation operation,
+        byte longAddress,
+        byte longAddressX)
+    {
+        Add(definitions, operation, CpuAddressingMode.Long, longAddress);
+        Add(definitions, operation, CpuAddressingMode.LongX, longAddressX);
     }
 
     private static void Add(

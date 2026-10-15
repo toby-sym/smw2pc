@@ -11,7 +11,7 @@ internal static class CpuInstructionExecutor
         SnesMemoryBus memoryBus,
         CpuOperation operation,
         CpuAddressingMode addressingMode,
-        ushort operand,
+        uint operand,
         ushort nextProgramCounter)
     {
         var accumulatorIs8Bit = state.IsAccumulator8Bit;
@@ -29,11 +29,11 @@ internal static class CpuInstructionExecutor
                 state.Halted = true;
                 return;
             case CpuOperation.JumpAbsolute:
-                state.ProgramCounter = operand;
+                state.ProgramCounter = (ushort)operand;
                 return;
             case CpuOperation.CallAbsolute:
                 PushValue(state, memoryBus, unchecked((ushort)(nextProgramCounter - 1)), is8Bit: false);
-                state.ProgramCounter = operand;
+                state.ProgramCounter = (ushort)operand;
                 return;
             case CpuOperation.ReturnFromSubroutine:
                 state.ProgramCounter = unchecked((ushort)(PopValue(state, memoryBus, is8Bit: false) + 1));
@@ -262,20 +262,28 @@ internal static class CpuInstructionExecutor
         CpuState state,
         SnesMemoryBus memoryBus,
         CpuAddressingMode addressingMode,
-        ushort operand,
+        uint operand,
         bool is8Bit)
     {
         if (addressingMode is CpuAddressingMode.ImmediateAccumulator
             or CpuAddressingMode.ImmediateIndex
             or CpuAddressingMode.ImmediateByte)
         {
-            return is8Bit || addressingMode == CpuAddressingMode.ImmediateByte ? (ushort)(operand & ByteMask) : operand;
+            return is8Bit || addressingMode == CpuAddressingMode.ImmediateByte
+                ? (ushort)(operand & ByteMask)
+                : (ushort)operand;
         }
 
         var address = GetEffectiveAddress(state, addressingMode, operand);
         if (is8Bit)
         {
             return memoryBus.ReadByte(address);
+        }
+
+        if (addressingMode is CpuAddressingMode.Long or CpuAddressingMode.LongX)
+        {
+            var nextAddress = (address + 1) & 0xFFFFFF;
+            return (ushort)(memoryBus.ReadByte(address) | (memoryBus.ReadByte(nextAddress) << 8));
         }
 
         return memoryBus.ReadWordInBank(address);
@@ -285,7 +293,7 @@ internal static class CpuInstructionExecutor
         CpuState state,
         SnesMemoryBus memoryBus,
         CpuAddressingMode addressingMode,
-        ushort operand,
+        uint operand,
         ushort value,
         bool is8Bit)
     {
@@ -296,14 +304,15 @@ internal static class CpuInstructionExecutor
         }
         else
         {
-            var bank = address & 0xFF0000;
-            var offset = (address + 1) & 0xFFFF;
+            var nextAddress = addressingMode is CpuAddressingMode.Long or CpuAddressingMode.LongX
+                ? (address + 1) & 0xFFFFFF
+                : (address & 0xFF0000) | ((address + 1) & 0xFFFF);
             memoryBus.WriteByte(address, (byte)value);
-            memoryBus.WriteByte(bank | offset, (byte)(value >> 8));
+            memoryBus.WriteByte(nextAddress, (byte)(value >> 8));
         }
     }
 
-    private static uint GetEffectiveAddress(CpuState state, CpuAddressingMode addressingMode, ushort operand)
+    private static uint GetEffectiveAddress(CpuState state, CpuAddressingMode addressingMode, uint operand)
     {
         var index = addressingMode is CpuAddressingMode.DirectPageY or CpuAddressingMode.AbsoluteY
             ? state.Y
@@ -316,15 +325,20 @@ internal static class CpuInstructionExecutor
         if (addressingMode is CpuAddressingMode.DirectPage or CpuAddressingMode.DirectPageX or CpuAddressingMode.DirectPageY)
         {
             var offset = addressingMode == CpuAddressingMode.DirectPage
-                ? operand
-                : (ushort)(operand + index);
+                ? (ushort)operand
+                : (ushort)((ushort)operand + index);
             return (ushort)(state.DirectPage + offset);
+        }
+
+        if (addressingMode is CpuAddressingMode.Long or CpuAddressingMode.LongX)
+        {
+            return (operand + (addressingMode == CpuAddressingMode.LongX ? (uint)index : 0u)) & 0xFFFFFF;
         }
 
         var absolute = addressingMode switch
         {
-            CpuAddressingMode.Absolute => operand,
-            CpuAddressingMode.AbsoluteX or CpuAddressingMode.AbsoluteY => (ushort)(operand + index),
+            CpuAddressingMode.Absolute => (ushort)operand,
+            CpuAddressingMode.AbsoluteX or CpuAddressingMode.AbsoluteY => (ushort)((ushort)operand + index),
             _ => throw new ArgumentOutOfRangeException(nameof(addressingMode), addressingMode, "Not a memory addressing mode."),
         };
         return ((uint)state.DataBank << 16) | absolute;
