@@ -100,8 +100,8 @@ internal enum CpuOperation
     PushEffectiveAddress,
     PushEffectiveIndirect,
     PushEffectiveRelative,
-    BlockMoveNegative,
-    BlockMovePositive,
+    BlockMoveNext,
+    BlockMovePrevious,
     WaitForInterrupt,
     Wdm,
 }
@@ -180,8 +180,8 @@ internal static class CpuInstructionSet
         Add(definitions, CpuOperation.BranchEqual, CpuAddressingMode.Relative, 0xF0);
         Add(definitions, CpuOperation.BranchAlways, CpuAddressingMode.Relative, 0x80);
         Add(definitions, CpuOperation.BranchLong, CpuAddressingMode.RelativeLong, 0x82);
-        Add(definitions, CpuOperation.BlockMovePositive, CpuAddressingMode.BlockMove, 0x44);
-        Add(definitions, CpuOperation.BlockMoveNegative, CpuAddressingMode.BlockMove, 0x54);
+        Add(definitions, CpuOperation.BlockMovePrevious, CpuAddressingMode.BlockMove, 0x44);
+        Add(definitions, CpuOperation.BlockMoveNext, CpuAddressingMode.BlockMove, 0x54);
 
         Add(definitions, CpuOperation.LoadAccumulator, CpuAddressingMode.ImmediateAccumulator, 0xA9);
         Add(definitions, CpuOperation.LoadAccumulator, CpuAddressingMode.DirectPage, 0xA5);

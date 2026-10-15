@@ -17,17 +17,20 @@ translated CPU, and displays the SNES video output. Use the arrow keys to move,
 
 The core translates 65C816 instruction blocks into .NET IL, which the .NET JIT
 compiles for the host CPU. It can execute code from cartridge ROM and copied
-WRAM. Super Mario World currently reaches its **Nintendo Presents** startup
-screen; gameplay is not yet working. The decoder has entries for all 256 opcode
-bytes in the [WDC W65C816S datasheet's opcode matrix](https://www.westerndesigncenter.com/wdc/documentation/w65c816s.pdf)
+WRAM. The tested Super Mario World (Europe) ROM reaches its intro, Yoshi's
+Island overworld, and Yoshi's House; player movement responds in the first
+level. This confirms the current boot-to-gameplay milestone, while the full game
+and every gameplay mechanic still need validation. The decoder has entries for
+all 256 opcode bytes in the [WDC W65C816S datasheet's opcode matrix](https://www.westerndesigncenter.com/wdc/documentation/w65c816s.pdf)
 (Table 5-4). This checks opcode coverage, while instruction behavior and timing
 still need broader validation.
 
-The current hardware path includes basic LoROM/WRAM mapping, DMA, PPU tile and
-sprite output, controller input, frame-based VBlank/NMI, and a silent APU startup
-stub. It does not emulate the SPC700 audio processor or fully model PPU features,
-DMA timing, interrupts, and CPU cycle timing. The CPU semantics and hardware
-behavior still need broader validation before gameplay.
+The current hardware path includes basic LoROM/WRAM mapping, DMA/HDMA, PPU tile,
+sprite and Mode 7 output, controller input, frame-based VBlank/NMI, and a silent
+APU startup stub. Visual differences remain, and the SPC700 audio processor is
+not emulated. PPU features, DMA timing, interrupts, and CPU cycle timing are
+still partial, so compatibility beyond the verified startup and first-level
+path is not established.
 
 Run the core tests with:
 

@@ -96,12 +96,12 @@ internal static class CpuInstructionExecutor
             case CpuOperation.BranchLong:
                 state.ProgramCounter = unchecked((ushort)(nextProgramCounter + (short)operand));
                 return;
-            case CpuOperation.BlockMoveNegative:
-                MoveBlock(state, memoryBus, operand, increment: false);
+            case CpuOperation.BlockMoveNext:
+                MoveBlock(state, memoryBus, operand, increment: true);
                 state.ProgramCounter = nextProgramCounter;
                 return;
-            case CpuOperation.BlockMovePositive:
-                MoveBlock(state, memoryBus, operand, increment: true);
+            case CpuOperation.BlockMovePrevious:
+                MoveBlock(state, memoryBus, operand, increment: false);
                 state.ProgramCounter = nextProgramCounter;
                 return;
             case CpuOperation.BranchPlus:

@@ -205,8 +205,8 @@ public sealed class NativeBlockTranslator
             or CpuOperation.ReturnFromSubroutineLong
             or CpuOperation.ReturnFromInterrupt
             or CpuOperation.BranchLong
-            or CpuOperation.BlockMoveNegative
-            or CpuOperation.BlockMovePositive
+            or CpuOperation.BlockMoveNext
+            or CpuOperation.BlockMovePrevious
             or CpuOperation.WaitForInterrupt
             or CpuOperation.BranchPlus
             or CpuOperation.BranchMinus
