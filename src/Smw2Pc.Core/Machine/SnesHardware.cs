@@ -17,6 +17,14 @@ public sealed class SnesHardware
     private readonly byte[] apuPorts = new byte[4];
     private readonly byte[] cpuRegisters = new byte[0x0E];
     private readonly byte[] dmaRegisters = new byte[0x80];
+    private readonly ushort[] hdmaTableAddresses = new ushort[8];
+    private readonly ushort[] hdmaDataAddresses = new ushort[8];
+    private readonly byte[] hdmaLineCounts = new byte[8];
+    private readonly bool[] hdmaChannelActive = new bool[8];
+    private readonly bool[] hdmaRepeat = new bool[8];
+    private readonly bool[] hdmaTransferThisLine = new bool[8];
+    private readonly byte[] ppuRegistersByScanline;
+    private readonly ushort[] fixedColorsByScanline;
     private readonly ushort[] backgroundHorizontalOffsets = new ushort[4];
     private readonly ushort[] backgroundVerticalOffsets = new ushort[4];
     private readonly byte[] backgroundScrollLatches = new byte[8];
@@ -25,6 +33,7 @@ public sealed class SnesHardware
     private readonly int[] controllerShiftPositions = new int[ControllerCount];
     private int apuHandshakeInstructionsRemaining = 256;
     private int frameInstructionPosition;
+    private int currentScanline;
     private uint workRamPortAddress;
     private ushort videoRamWordAddress;
     private ushort objectAttributeWordAddress;
@@ -38,6 +47,7 @@ public sealed class SnesHardware
     private bool backgroundScrollHighByte;
     private bool controllerStrobe;
     private bool inVBlank;
+    private bool hdmaFrameStarted;
     private bool nmiFlag;
     private bool nmiRequested;
 
@@ -45,6 +55,12 @@ public sealed class SnesHardware
     {
         scanlinesPerFrame = palRegion ? 312 : 262;
         vBlankStartInstruction = InstructionsPerFrame * 225 / scanlinesPerFrame;
+        ppuRegistersByScanline = new byte[scanlinesPerFrame * ppuRegisters.Length];
+        fixedColorsByScanline = new ushort[scanlinesPerFrame];
+        for (var scanline = 0; scanline < scanlinesPerFrame; scanline++)
+        {
+            CapturePpuScanline(scanline);
+        }
     }
 
     public ReadOnlyMemory<byte> VideoRam => videoRam;
@@ -56,6 +72,20 @@ public sealed class SnesHardware
     public ReadOnlyMemory<byte> PpuRegisters => ppuRegisters;
 
     public ushort FixedColor => (ushort)(fixedRed | (fixedGreen << 5) | (fixedBlue << 10));
+
+    public ReadOnlyMemory<byte> GetPpuRegistersForScanline(int scanline)
+    {
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(scanline, scanlinesPerFrame);
+        ArgumentOutOfRangeException.ThrowIfNegative(scanline);
+        return new ReadOnlyMemory<byte>(ppuRegistersByScanline, scanline * ppuRegisters.Length, ppuRegisters.Length);
+    }
+
+    public ushort GetFixedColorForScanline(int scanline)
+    {
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(scanline, scanlinesPerFrame);
+        ArgumentOutOfRangeException.ThrowIfNegative(scanline);
+        return fixedColorsByScanline[scanline];
+    }
 
     public ushort GetBackgroundHorizontalOffset(int background)
     {
@@ -71,8 +101,9 @@ public sealed class SnesHardware
         return backgroundVerticalOffsets[background];
     }
 
-    internal void AdvanceCpuInstructions(int instructionCount)
+    internal void AdvanceCpuInstructions(SnesMemoryBus memoryBus, int instructionCount)
     {
+        ArgumentNullException.ThrowIfNull(memoryBus);
         if (instructionCount <= 0)
         {
             return;
@@ -93,7 +124,15 @@ public sealed class SnesHardware
         var instructionsRemaining = instructionCount;
         while (instructionsRemaining > 0)
         {
-            var nextBoundary = inVBlank ? InstructionsPerFrame : vBlankStartInstruction;
+            if (!hdmaFrameStarted)
+            {
+                BeginHdmaFrame(memoryBus);
+            }
+
+            var nextScanlineBoundary = (int)(((long)(currentScanline + 1) * InstructionsPerFrame + scanlinesPerFrame - 1) / scanlinesPerFrame);
+            var nextBoundary = Math.Min(
+                inVBlank ? InstructionsPerFrame : vBlankStartInstruction,
+                nextScanlineBoundary);
             var untilBoundary = nextBoundary - frameInstructionPosition;
             var advance = Math.Min(instructionsRemaining, untilBoundary);
             frameInstructionPosition += advance;
@@ -101,12 +140,24 @@ public sealed class SnesHardware
 
             if (frameInstructionPosition == nextBoundary)
             {
-                if (inVBlank)
+                if (frameInstructionPosition == nextScanlineBoundary)
+                {
+                    ProcessHdmaScanline(memoryBus);
+                    currentScanline++;
+                    if (currentScanline < scanlinesPerFrame)
+                    {
+                        CapturePpuScanline(currentScanline);
+                    }
+                }
+
+                if (frameInstructionPosition == InstructionsPerFrame)
                 {
                     inVBlank = false;
                     frameInstructionPosition = 0;
+                    currentScanline = 0;
+                    hdmaFrameStarted = false;
                 }
-                else
+                else if (frameInstructionPosition == vBlankStartInstruction)
                 {
                     inVBlank = true;
                     nmiFlag = true;
@@ -117,6 +168,153 @@ public sealed class SnesHardware
                 }
             }
         }
+    }
+
+    private void BeginHdmaFrame(SnesMemoryBus memoryBus)
+    {
+        hdmaFrameStarted = true;
+        currentScanline = 0;
+        var enabledChannels = cpuRegisters[0x0C];
+        for (var channel = 0; channel < 8; channel++)
+        {
+            var registerBase = channel * 0x10;
+            hdmaChannelActive[channel] = (enabledChannels & (1 << channel)) != 0;
+            hdmaLineCounts[channel] = 0;
+            hdmaRepeat[channel] = false;
+            hdmaTransferThisLine[channel] = false;
+            if (!hdmaChannelActive[channel])
+            {
+                continue;
+            }
+
+            hdmaTableAddresses[channel] = (ushort)(dmaRegisters[registerBase + 2] | (dmaRegisters[registerBase + 3] << 8));
+            dmaRegisters[registerBase + 8] = (byte)hdmaTableAddresses[channel];
+            dmaRegisters[registerBase + 9] = (byte)(hdmaTableAddresses[channel] >> 8);
+            LoadNextHdmaTableEntry(memoryBus, channel);
+        }
+
+        CapturePpuScanline(0);
+    }
+
+    private void ProcessHdmaScanline(SnesMemoryBus memoryBus)
+    {
+        for (var channel = 0; channel < 8; channel++)
+        {
+            if (!hdmaChannelActive[channel])
+            {
+                continue;
+            }
+
+            var registerBase = channel * 0x10;
+            var mode = dmaRegisters[registerBase];
+            if (hdmaTransferThisLine[channel])
+            {
+                var transferPattern = GetDmaTransferPattern(mode & 0x07);
+                var indirect = (mode & 0x40) != 0;
+                var dataBank = indirect ? dmaRegisters[registerBase + 7] : dmaRegisters[registerBase + 4];
+                for (var index = 0; index < transferPattern.Length; index++)
+                {
+                    var bAddress = (ushort)(0x2100 + ((dmaRegisters[registerBase + 1] + transferPattern[index]) & 0xFF));
+                    var aAddress = indirect
+                        ? ((uint)dataBank << 16) | hdmaDataAddresses[channel]
+                        : ((uint)dataBank << 16) | hdmaTableAddresses[channel];
+                    if ((mode & 0x80) != 0)
+                    {
+                        memoryBus.WriteByte(aAddress, memoryBus.ReadByte(bAddress));
+                    }
+                    else
+                    {
+                        memoryBus.WriteByte(bAddress, memoryBus.ReadByte(aAddress));
+                    }
+
+                    if (indirect)
+                    {
+                        hdmaDataAddresses[channel]++;
+                        dmaRegisters[registerBase + 5] = (byte)hdmaDataAddresses[channel];
+                        dmaRegisters[registerBase + 6] = (byte)(hdmaDataAddresses[channel] >> 8);
+                    }
+                    else
+                    {
+                        hdmaTableAddresses[channel]++;
+                    }
+                }
+            }
+
+            hdmaLineCounts[channel]--;
+            if (hdmaLineCounts[channel] == 0)
+            {
+                LoadNextHdmaTableEntry(memoryBus, channel);
+            }
+            else
+            {
+                hdmaTransferThisLine[channel] = hdmaRepeat[channel];
+                dmaRegisters[registerBase + 10] = (byte)(hdmaLineCounts[channel] | (hdmaRepeat[channel] ? 0x80 : 0));
+                if ((mode & 0x40) == 0)
+                {
+                    dmaRegisters[registerBase + 8] = (byte)hdmaTableAddresses[channel];
+                    dmaRegisters[registerBase + 9] = (byte)(hdmaTableAddresses[channel] >> 8);
+                }
+            }
+        }
+    }
+
+    private void LoadNextHdmaTableEntry(SnesMemoryBus memoryBus, int channel)
+    {
+        var registerBase = channel * 0x10;
+        var mode = dmaRegisters[registerBase];
+        var tableBank = dmaRegisters[registerBase + 4];
+        var descriptor = memoryBus.ReadByte(((uint)tableBank << 16) | hdmaTableAddresses[channel]);
+        hdmaTableAddresses[channel]++;
+        if (descriptor == 0)
+        {
+            hdmaChannelActive[channel] = false;
+            hdmaLineCounts[channel] = 0;
+            hdmaTransferThisLine[channel] = false;
+            dmaRegisters[registerBase + 10] = 0;
+            return;
+        }
+
+        hdmaRepeat[channel] = (descriptor & 0x80) != 0;
+        hdmaLineCounts[channel] = (byte)(descriptor & 0x7F);
+        if (hdmaLineCounts[channel] == 0)
+        {
+            hdmaLineCounts[channel] = 128;
+        }
+
+        hdmaTransferThisLine[channel] = true;
+        if ((mode & 0x40) != 0)
+        {
+            var pointerLow = memoryBus.ReadByte(((uint)tableBank << 16) | hdmaTableAddresses[channel]);
+            hdmaTableAddresses[channel]++;
+            var pointerHigh = memoryBus.ReadByte(((uint)tableBank << 16) | hdmaTableAddresses[channel]);
+            hdmaTableAddresses[channel]++;
+            hdmaDataAddresses[channel] = (ushort)(pointerLow | (pointerHigh << 8));
+            dmaRegisters[registerBase + 5] = pointerLow;
+            dmaRegisters[registerBase + 6] = pointerHigh;
+        }
+
+        dmaRegisters[registerBase + 8] = (byte)hdmaTableAddresses[channel];
+        dmaRegisters[registerBase + 9] = (byte)(hdmaTableAddresses[channel] >> 8);
+        dmaRegisters[registerBase + 10] = (byte)(hdmaLineCounts[channel] | (hdmaRepeat[channel] ? 0x80 : 0));
+    }
+
+    private void CapturePpuScanline(int scanline)
+    {
+        ppuRegisters.CopyTo(ppuRegistersByScanline, scanline * ppuRegisters.Length);
+        fixedColorsByScanline[scanline] = FixedColor;
+    }
+
+    private static byte[] GetDmaTransferPattern(int mode)
+    {
+        return mode switch
+        {
+            1 => [0, 1],
+            2 or 6 => [0, 0],
+            3 or 7 => [0, 0, 1, 1],
+            4 => [0, 1, 2, 3],
+            5 => [0, 1, 0, 1],
+            _ => [0],
+        };
     }
 
     internal bool ConsumeNmiRequest()

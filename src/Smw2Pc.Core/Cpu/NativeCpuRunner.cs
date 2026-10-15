@@ -29,7 +29,7 @@ public sealed class NativeCpuRunner
         {
             if (State.WaitingForInterrupt)
             {
-                MemoryBus.Hardware.AdvanceCpuInstructions(1);
+                MemoryBus.Hardware.AdvanceCpuInstructions(MemoryBus, 1);
                 instructionsExecuted++;
                 if (MemoryBus.Hardware.ConsumeNmiRequest())
                 {
@@ -42,7 +42,7 @@ public sealed class NativeCpuRunner
             var blockSize = Math.Min(MaximumBlockSize, instructionBudget - instructionsExecuted);
             var block = GetOrTranslateBlock(blockSize);
             block.Execute(State, MemoryBus);
-            MemoryBus.Hardware.AdvanceCpuInstructions(block.InstructionCount);
+            MemoryBus.Hardware.AdvanceCpuInstructions(MemoryBus, block.InstructionCount);
             if (MemoryBus.Hardware.ConsumeNmiRequest())
             {
                 EnterNmi();
