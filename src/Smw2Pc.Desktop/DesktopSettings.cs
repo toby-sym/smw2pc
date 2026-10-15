@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SDL3;
 
 internal enum GameAspectRatio
 {
@@ -32,6 +33,30 @@ internal sealed class DesktopSettings
 
     public bool SmoothScaling { get; set; } = true;
 
+    public SDL.Keycode MoveLeftKey { get; set; } = SDL.Keycode.Left;
+
+    public SDL.Keycode MoveRightKey { get; set; } = SDL.Keycode.Right;
+
+    public SDL.Keycode MoveUpKey { get; set; } = SDL.Keycode.Up;
+
+    public SDL.Keycode MoveDownKey { get; set; } = SDL.Keycode.Down;
+
+    public SDL.Keycode ButtonYKey { get; set; } = SDL.Keycode.A;
+
+    public SDL.Keycode ButtonXKey { get; set; } = SDL.Keycode.S;
+
+    public SDL.Keycode ButtonAKey { get; set; } = SDL.Keycode.X;
+
+    public SDL.Keycode ButtonBKey { get; set; } = SDL.Keycode.Z;
+
+    public SDL.Keycode StartKey { get; set; } = SDL.Keycode.Return;
+
+    public SDL.Keycode SelectKey { get; set; } = SDL.Keycode.RShift;
+
+    public SDL.Keycode ButtonLKey { get; set; } = SDL.Keycode.Q;
+
+    public SDL.Keycode ButtonRKey { get; set; } = SDL.Keycode.W;
+
     public static DesktopSettings Load()
     {
         try
@@ -51,6 +76,19 @@ internal sealed class DesktopSettings
                     {
                         settings.AspectRatio = GameAspectRatio.Television;
                     }
+
+                    settings.MoveLeftKey = GetValidKey(settings.MoveLeftKey, SDL.Keycode.Left);
+                    settings.MoveRightKey = GetValidKey(settings.MoveRightKey, SDL.Keycode.Right);
+                    settings.MoveUpKey = GetValidKey(settings.MoveUpKey, SDL.Keycode.Up);
+                    settings.MoveDownKey = GetValidKey(settings.MoveDownKey, SDL.Keycode.Down);
+                    settings.ButtonYKey = GetValidKey(settings.ButtonYKey, SDL.Keycode.A);
+                    settings.ButtonXKey = GetValidKey(settings.ButtonXKey, SDL.Keycode.S);
+                    settings.ButtonAKey = GetValidKey(settings.ButtonAKey, SDL.Keycode.X);
+                    settings.ButtonBKey = GetValidKey(settings.ButtonBKey, SDL.Keycode.Z);
+                    settings.StartKey = GetValidKey(settings.StartKey, SDL.Keycode.Return);
+                    settings.SelectKey = GetValidKey(settings.SelectKey, SDL.Keycode.RShift);
+                    settings.ButtonLKey = GetValidKey(settings.ButtonLKey, SDL.Keycode.Q);
+                    settings.ButtonRKey = GetValidKey(settings.ButtonRKey, SDL.Keycode.W);
 
                     return settings;
                 }
@@ -85,5 +123,10 @@ internal sealed class DesktopSettings
     public static int ClampRenderFrameRate(int frameRate)
     {
         return Math.Clamp(frameRate, MinimumRenderFrameRate, MaximumRenderFrameRate);
+    }
+
+    private static SDL.Keycode GetValidKey(SDL.Keycode key, SDL.Keycode fallback)
+    {
+        return Enum.IsDefined(key) && key != SDL.Keycode.Unknown ? key : fallback;
     }
 }
