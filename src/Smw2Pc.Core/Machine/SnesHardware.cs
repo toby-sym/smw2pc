@@ -253,7 +253,7 @@ public sealed class SnesHardware
         if (address is >= 0x4200 and <= 0x420D)
         {
             cpuRegisters[address - 0x4200] = value;
-            if (address == 0x4200 && inVBlank && (value & 0x80) != 0)
+            if (address == 0x4200 && nmiFlag && (value & 0x80) != 0)
             {
                 nmiRequested = true;
             }
