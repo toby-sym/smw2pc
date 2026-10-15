@@ -15,6 +15,11 @@ translated CPU, and displays the SNES video output. Use the arrow keys to move,
 **Z** to jump, **X** to run, **Enter** for Start, **Right Shift** for Select,
 **A/S** for Y/X, and **Q/W** for L/R. Press **F1** to open another ROM.
 
+Resize the window directly or open **Settings** with **F2** to choose a window
+size, aspect ratio, and smooth or sharp scaling. The render cap can be adjusted
+from 15 to 240 FPS. These options affect presentation only: game logic continues
+at the ROM's native PAL or NTSC rate. Settings are saved between launches.
+
 The core translates 65C816 instruction blocks into .NET IL, which the .NET JIT
 compiles for the host CPU. It can execute code from cartridge ROM and copied
 WRAM. The tested Super Mario World (Europe) ROM reaches its intro, Yoshi's
