@@ -56,8 +56,8 @@ public sealed class SnesHardwareTests
         Assert.AreEqual((byte)0, memoryBus.ReadByte(0x004016) & 1);
         Assert.AreEqual((byte)0, memoryBus.ReadByte(0x004016) & 1);
         Assert.AreEqual((byte)1, memoryBus.ReadByte(0x004016) & 1);
-        Assert.AreEqual((byte)0x09, memoryBus.ReadByte(0x004218));
-        Assert.AreEqual((byte)0x01, memoryBus.ReadByte(0x004219));
+        Assert.AreEqual((byte)0x80, memoryBus.ReadByte(0x004218));
+        Assert.AreEqual((byte)0x90, memoryBus.ReadByte(0x004219));
     }
 
     [TestMethod]

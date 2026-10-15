@@ -264,18 +264,24 @@ public sealed class NativeCpuRunnerTests
     }
 
     [TestMethod]
-    public void TranslatorRejectsUnsupportedOpcodesClearly()
+    public void BreakInstructionPushesReturnStateAndJumpsToItsVector()
     {
-        using var romFile = TemporaryRomFile.Create(CreateRomImage([0x00]));
+        using var romFile = TemporaryRomFile.Create(CreateRomImage([0x00, 0xAB], breakVector: 0x8100));
         var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
         var runner = new NativeCpuRunner(memoryBus);
 
-        var exception = Assert.ThrowsExactly<NotSupportedException>(() => runner.Run(1));
+        var instructionsExecuted = runner.Run(1);
 
-        StringAssert.Contains(exception.Message, "Opcode 0x00 at 0x008000");
+        Assert.AreEqual(1, instructionsExecuted);
+        Assert.AreEqual((ushort)0x8100, runner.State.ProgramCounter);
+        Assert.AreEqual((byte)0, runner.State.ProgramBank);
+        Assert.AreEqual((ushort)0x01FC, runner.State.StackPointer);
+        Assert.AreEqual((byte)0x80, memoryBus.ReadByte(0x0001FF));
+        Assert.AreEqual((byte)0x02, memoryBus.ReadByte(0x0001FE));
+        Assert.AreEqual((byte)0x34, memoryBus.ReadByte(0x0001FD));
     }
 
-    private static byte[] CreateRomImage(byte[] program)
+    private static byte[] CreateRomImage(byte[] program, ushort breakVector = 0)
     {
         var image = new byte[0x8000];
         program.CopyTo(image, 0);
@@ -286,6 +292,7 @@ public sealed class NativeCpuRunnerTests
         BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(headerOffset + 0x1C, 2), 0x1234);
         BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(headerOffset + 0x1E, 2), 0xEDCB);
         BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(0x7FFC, 2), 0x8000);
+        BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(0x7FFE, 2), breakVector);
         return image;
     }
 
