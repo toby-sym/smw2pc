@@ -6,6 +6,7 @@ public sealed class SnesHardware
     private const int VideoRamSize = 0x10000;
     private const int ControllerCount = 2;
     private const int InstructionsPerFrame = 18000;
+    private const int ScanlinesPerFrame = 262;
     private const int VBlankStartInstruction = 16000;
 
     private readonly byte[] workRam = new byte[WorkRamSize];
@@ -167,7 +168,12 @@ public sealed class SnesHardware
 
         if (address == 0x4212)
         {
-            value = (byte)((openBus & 0x7E) | (inVBlank ? 0x80 : 0));
+            var horizontalPosition = (frameInstructionPosition * ScanlinesPerFrame) % InstructionsPerFrame;
+            var inHBlank = horizontalPosition >= (InstructionsPerFrame * 3 / 4);
+            value = (byte)(
+                (openBus & 0x3E)
+                | (inHBlank ? 0x40 : 0)
+                | (inVBlank ? 0x80 : 0));
             return true;
         }
 
@@ -191,9 +197,10 @@ public sealed class SnesHardware
             var relative = address - 0x4218;
             var port = relative / 2;
             var highByte = (relative & 1) != 0;
-            value = port < ControllerCount
-                ? (byte)((ushort)controllerButtons[port] >> (highByte ? 8 : 0))
-                : (byte)0;
+            var autoJoypadValue = port < ControllerCount
+                ? EncodeAutoJoypadButtons(controllerButtons[port])
+                : (ushort)0;
+            value = (byte)(autoJoypadValue >> (highByte ? 8 : 0));
             return true;
         }
 
@@ -464,6 +471,24 @@ public sealed class SnesHardware
             controllerShiftRegisters[port] = (ushort)controllerButtons[port];
             controllerShiftPositions[port] = 0;
         }
+    }
+
+    private static ushort EncodeAutoJoypadButtons(SnesControllerButtons buttons)
+    {
+        ushort value = 0;
+        value |= (ushort)(((buttons & SnesControllerButtons.B) != 0 ? 1 : 0) << 15);
+        value |= (ushort)(((buttons & SnesControllerButtons.Y) != 0 ? 1 : 0) << 14);
+        value |= (ushort)(((buttons & SnesControllerButtons.Select) != 0 ? 1 : 0) << 13);
+        value |= (ushort)(((buttons & SnesControllerButtons.Start) != 0 ? 1 : 0) << 12);
+        value |= (ushort)(((buttons & SnesControllerButtons.Up) != 0 ? 1 : 0) << 11);
+        value |= (ushort)(((buttons & SnesControllerButtons.Down) != 0 ? 1 : 0) << 10);
+        value |= (ushort)(((buttons & SnesControllerButtons.Left) != 0 ? 1 : 0) << 9);
+        value |= (ushort)(((buttons & SnesControllerButtons.Right) != 0 ? 1 : 0) << 8);
+        value |= (ushort)(((buttons & SnesControllerButtons.A) != 0 ? 1 : 0) << 7);
+        value |= (ushort)(((buttons & SnesControllerButtons.X) != 0 ? 1 : 0) << 6);
+        value |= (ushort)(((buttons & SnesControllerButtons.L) != 0 ? 1 : 0) << 5);
+        value |= (ushort)(((buttons & SnesControllerButtons.R) != 0 ? 1 : 0) << 4);
+        return value;
     }
 
     private byte ReadControllerBit(int port)
