@@ -4,7 +4,6 @@ namespace Smw2Pc.Core.Machine;
 
 public sealed class SnesMemoryBus
 {
-    private const int WorkRamSize = 0x20000;
     private const int LoRomBankSize = 0x8000;
     private const int LoRomBankMask = LoRomBankSize - 1;
     private const int AddressMask = 0xFFFFFF;
@@ -12,7 +11,7 @@ public sealed class SnesMemoryBus
     private const int OffsetMask = 0xFFFF;
 
     private readonly ReadOnlyMemory<byte> romData;
-    private readonly byte[] workRam = new byte[WorkRamSize];
+    private byte openBus = 0xFF;
 
     public SnesMemoryBus(SnesRom rom)
     {
@@ -25,7 +24,10 @@ public sealed class SnesMemoryBus
         }
 
         romData = rom.Data;
+        Hardware = new SnesHardware();
     }
+
+    public SnesHardware Hardware { get; }
 
     public byte ReadByte(uint address)
     {
@@ -35,21 +37,25 @@ public sealed class SnesMemoryBus
 
         if (bank is 0x7E or 0x7F)
         {
-            return workRam[((bank - 0x7E) << 16) | offset];
+            return ReadMappedByte(Hardware.ReadWorkRam(((bank - 0x7E) << 16) | offset));
         }
 
         if (IsLowWorkRamMirror(bank, offset))
         {
-            return workRam[offset & 0x1FFF];
+            return ReadMappedByte(Hardware.ReadWorkRam(offset & 0x1FFF));
+        }
+
+        if (IsSystemBank(bank) && Hardware.TryReadRegister((ushort)offset, openBus, out var registerValue))
+        {
+            return ReadMappedByte(registerValue);
         }
 
         if (TryGetRomOffset(address, out var romOffset))
         {
-            return romData.Span[romOffset];
+            return ReadMappedByte(romData.Span[romOffset]);
         }
 
-        // PPU, APU, and CPU registers will be mapped here in later runtime work.
-        return 0xFF;
+        return openBus;
     }
 
     public ushort ReadWordInBank(uint address)
@@ -66,18 +72,25 @@ public sealed class SnesMemoryBus
     public void WriteByte(uint address, byte value)
     {
         address &= AddressMask;
+        openBus = value;
         var bank = (int)(address >> 16);
         var offset = (int)(address & OffsetMask);
 
         if (bank is 0x7E or 0x7F)
         {
-            workRam[((bank - 0x7E) << 16) | offset] = value;
+            Hardware.WriteWorkRam(((bank - 0x7E) << 16) | offset, value);
             return;
         }
 
         if (IsLowWorkRamMirror(bank, offset))
         {
-            workRam[offset & 0x1FFF] = value;
+            Hardware.WriteWorkRam(offset & 0x1FFF, value);
+            return;
+        }
+
+        if (IsSystemBank(bank))
+        {
+            Hardware.TryWriteRegister((ushort)offset, value);
         }
     }
 
@@ -105,7 +118,17 @@ public sealed class SnesMemoryBus
 
     private static bool IsLowWorkRamMirror(int bank, int offset)
     {
-        var isSystemBank = bank <= 0x3F || bank is >= 0x80 and <= 0xBF;
-        return isSystemBank && offset < 0x2000;
+        return IsSystemBank(bank) && offset < 0x2000;
+    }
+
+    private byte ReadMappedByte(byte value)
+    {
+        openBus = value;
+        return value;
+    }
+
+    private static bool IsSystemBank(int bank)
+    {
+        return bank <= 0x3F || bank is >= 0x80 and <= 0xBF;
     }
 }
