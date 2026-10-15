@@ -102,6 +102,10 @@ internal static class Program
             return 1;
         }
 
+        var textRenderer = UiTextRenderer.TryCreate(
+            renderer,
+            Path.Combine(AppContext.BaseDirectory, "assets", "fonts", "Inter-Variable.ttf"));
+
         SDL.SetTextureScaleMode(gameTexture, GetScaleMode(settings));
         var verticalSyncEnabled = SDL.SetRenderVSync(renderer, 1);
         if (!verticalSyncEnabled)
@@ -396,24 +400,7 @@ internal static class Program
                 }
                 else
                 {
-                    SDL.SetRenderDrawColor(renderer, 12, 19, 31, 255);
-                    SDL.RenderFillRect(renderer, in gameArea);
-                    var titleX = gameArea.X + ((gameArea.W - 160) / 2);
-                    var titleY = gameArea.Y + (gameArea.H * 0.42f);
-                    SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                    SDL.RenderDebugText(renderer, titleX, titleY, "SMW2PC");
-                    SDL.RenderDebugText(renderer, titleX - 64, titleY + 28, "A native Super Mario World runner");
-                    SDL.SetRenderDrawColor(renderer, 52, 86, 132, 255);
-                    SDL.RenderFillRect(renderer, in launchButton);
-                    SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                    SDL.RenderDebugText(renderer, launchButton.X + 22, launchButton.Y + 11, "OPEN ROM");
-                    SDL.RenderDebugText(renderer, titleX - 80, launchButton.Y + 48, "Choose an .sfc, .smc, or ZIP file");
-                    if (!string.IsNullOrWhiteSpace(statusMessage))
-                    {
-                        SDL.SetRenderDrawColor(renderer, 242, 190, 128, 255);
-                        SDL.RenderDebugText(renderer, gameArea.X + 24, gameArea.Y + gameArea.H - 30,
-                            Truncate(statusMessage, Math.Max(12, (int)(gameArea.W / 8))));
-                    }
+                    DrawLaunchScreen(renderer, textRenderer, gameArea, launchButton, statusMessage);
                 }
 
                 DrawSettingsCog(renderer, settingsButton, settingsOpen);
@@ -422,6 +409,7 @@ internal static class Program
                 {
                     DrawSettingsPanel(
                         renderer,
+                        textRenderer,
                         settingsPanel,
                         settingsTab,
                         rebindingAction,
@@ -463,12 +451,105 @@ internal static class Program
             SDL.DestroyAudioStream(audioStream);
         }
 
+        textRenderer?.Dispose();
         SDL.DestroyTexture(gameTexture);
         SDL.DestroyRenderer(renderer);
         SDL.DestroyWindow(window);
         SDL.Quit();
         return 0;
     }
+
+    private static void DrawLaunchScreen(
+        IntPtr renderer,
+        UiTextRenderer? textRenderer,
+        SDL.FRect gameArea,
+        SDL.FRect launchButton,
+        string statusMessage)
+    {
+        SDL.SetRenderDrawColor(renderer, 12, 19, 31, 255);
+        SDL.RenderFillRect(renderer, in gameArea);
+
+        var card = GetLaunchCard(gameArea);
+        SDL.SetRenderDrawColor(renderer, 18, 29, 45, 255);
+        SDL.RenderFillRect(renderer, in card);
+        SDL.SetRenderDrawColor(renderer, 50, 69, 91, 255);
+        SDL.RenderRect(renderer, in card);
+
+        var accentBar = new SDL.FRect
+        {
+            X = card.X + 1,
+            Y = card.Y + 1,
+            W = card.W - 2,
+            H = 4,
+        };
+        SDL.SetRenderDrawColor(renderer, 232, 176, 77, 255);
+        SDL.RenderFillRect(renderer, in accentBar);
+
+        var centerX = card.X + (card.W / 2);
+        DrawCenteredText(renderer, textRenderer, "SMW2PC", centerX, card.Y + 42, 15,
+            MakeUiColor(133, 207, 158), bold: true);
+        DrawCenteredText(renderer, textRenderer, "SUPER MARIO WORLD", centerX, card.Y + 78, 32,
+            MakeUiColor(248, 250, 255), bold: true);
+        DrawCenteredText(renderer, textRenderer, "A native runner for your Super Nintendo game", centerX,
+            card.Y + 132, 16, MakeUiColor(181, 194, 211));
+
+        SDL.SetRenderDrawColor(renderer, 48, 123, 97, 255);
+        SDL.RenderFillRect(renderer, in launchButton);
+        SDL.SetRenderDrawColor(renderer, 111, 194, 153, 255);
+        SDL.RenderRect(renderer, in launchButton);
+        DrawCenteredText(renderer, textRenderer, "CHOOSE ROM FILE", centerX, launchButton.Y + 17, 16,
+            MakeUiColor(255, 255, 255), bold: true);
+        DrawCenteredText(renderer, textRenderer, "Supports .sfc, .smc, and ZIP files", centerX,
+            card.Y + 288, 13, MakeUiColor(151, 166, 186));
+
+        if (!string.IsNullOrWhiteSpace(statusMessage))
+        {
+            DrawCenteredText(renderer, textRenderer,
+                Truncate(statusMessage, Math.Max(12, (int)(card.W / 8))), centerX,
+                card.Y + 322, 12, MakeUiColor(242, 190, 128));
+        }
+    }
+
+    private static void DrawCenteredText(
+        IntPtr renderer,
+        UiTextRenderer? textRenderer,
+        string text,
+        float centerX,
+        float y,
+        float fontSize,
+        SDL.Color color,
+        bool bold = false)
+    {
+        var width = textRenderer?.Measure(text, fontSize, bold).Width ?? (text.Length * 8);
+        DrawText(renderer, textRenderer, text, centerX - (width / 2), y, fontSize, color, bold);
+    }
+
+    private static void DrawText(
+        IntPtr renderer,
+        UiTextRenderer? textRenderer,
+        string text,
+        float x,
+        float y,
+        float fontSize,
+        SDL.Color color,
+        bool bold = false)
+    {
+        if (textRenderer?.Draw(text, x, y, fontSize, color, bold) == true)
+        {
+            return;
+        }
+
+        SDL.SetRenderDrawColor(renderer, color.R, color.G, color.B, color.A);
+        SDL.RenderDebugText(renderer, x, y, text);
+    }
+
+    private static SDL.Color MakeUiColor(byte red, byte green, byte blue, byte alpha = 255) => new()
+    {
+        R = red,
+        G = green,
+        B = blue,
+        A = alpha,
+    };
 
     private static SDL.FRect GetGameArea(int outputWidth, int outputHeight, GameAspectRatio aspectRatio)
     {
@@ -527,11 +608,24 @@ internal static class Program
 
     private static SDL.FRect GetLaunchButton(SDL.FRect gameArea) => new()
     {
-        X = gameArea.X + ((gameArea.W - 180) / 2),
-        Y = gameArea.Y + (gameArea.H * 0.58f),
-        W = 180,
-        H = 40,
+        X = GetLaunchCard(gameArea).X + ((GetLaunchCard(gameArea).W - 240) / 2),
+        Y = GetLaunchCard(gameArea).Y + 210,
+        W = 240,
+        H = 54,
     };
+
+    private static SDL.FRect GetLaunchCard(SDL.FRect gameArea)
+    {
+        var width = Math.Min(620, gameArea.W - 32);
+        var height = Math.Min(360, gameArea.H - 32);
+        return new SDL.FRect
+        {
+            X = gameArea.X + ((gameArea.W - width) / 2),
+            Y = gameArea.Y + ((gameArea.H - height) / 2),
+            W = width,
+            H = height,
+        };
+    }
 
     private static SDL.FRect GetSettingsPanel(int outputWidth, int outputHeight)
     {
@@ -700,6 +794,7 @@ internal static class Program
 
     private static void DrawSettingsPanel(
         IntPtr renderer,
+        UiTextRenderer? textRenderer,
         SDL.FRect panel,
         SettingsTab settingsTab,
         GameAction? rebindingAction,
@@ -713,28 +808,31 @@ internal static class Program
         SDL.RenderFillRect(renderer, in panel);
         SDL.SetRenderDrawColor(renderer, 54, 67, 88, 255);
         SDL.RenderRect(renderer, in panel);
-        SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
-        SDL.RenderDebugText(renderer, panel.X + 16, panel.Y + 20, "SETTINGS");
-        DrawSettingsButton(renderer, GetPanelOpenRomButton(panel), "OPEN ROM");
-        DrawSettingsButton(renderer, GetPanelCloseButton(panel), "X");
-        DrawSettingsTab(renderer, GetDisplayTabButton(panel), "DISPLAY", settingsTab == SettingsTab.Display);
-        DrawSettingsTab(renderer, GetControlsTabButton(panel), "CONTROLS", settingsTab == SettingsTab.Controls);
+        DrawText(renderer, textRenderer, "SETTINGS", panel.X + 16, panel.Y + 18, 16,
+            MakeUiColor(248, 250, 255), bold: true);
+        DrawSettingsButton(renderer, textRenderer, GetPanelOpenRomButton(panel), "OPEN ROM", 11);
+        DrawSettingsButton(renderer, textRenderer, GetPanelCloseButton(panel), "X", 14);
+        DrawSettingsTab(renderer, textRenderer, GetDisplayTabButton(panel), "DISPLAY", settingsTab == SettingsTab.Display);
+        DrawSettingsTab(renderer, textRenderer, GetControlsTabButton(panel), "CONTROLS", settingsTab == SettingsTab.Controls);
 
         if (settingsTab == SettingsTab.Display)
         {
-            DrawSettingsRow(renderer, GetResolutionRow(panel), $"Window size: {settings.WindowWidth} x {settings.WindowHeight}");
-            DrawSettingsRow(renderer, GetAspectRatioRow(panel), $"Aspect ratio: {GetAspectRatioName(settings.AspectRatio)}");
-            DrawSettingsRow(renderer, GetScalingRow(panel), $"Smooth filtering: {(settings.SmoothScaling ? "On" : "Off")}");
+            DrawSettingsRow(renderer, textRenderer, GetResolutionRow(panel), $"Window size: {settings.WindowWidth} x {settings.WindowHeight}");
+            DrawSettingsRow(renderer, textRenderer, GetAspectRatioRow(panel), $"Aspect ratio: {GetAspectRatioName(settings.AspectRatio)}");
+            DrawSettingsRow(renderer, textRenderer, GetScalingRow(panel), $"Smooth filtering: {(settings.SmoothScaling ? "On" : "Off")}");
 
-            SDL.RenderDebugText(renderer, panel.X + 20, panel.Y + 246, $"Presentation cap: {settings.RenderFrameRate} FPS");
-            DrawSettingsButton(renderer, GetFrameRateDecreaseButton(panel), "-");
-            DrawSettingsButton(renderer, GetFrameRateIncreaseButton(panel), "+");
+            DrawText(renderer, textRenderer, $"Presentation cap: {settings.RenderFrameRate} FPS",
+                panel.X + 20, panel.Y + 242, 14, MakeUiColor(248, 250, 255));
+            DrawSettingsButton(renderer, textRenderer, GetFrameRateDecreaseButton(panel), "-", 16);
+            DrawSettingsButton(renderer, textRenderer, GetFrameRateIncreaseButton(panel), "+", 16);
 
             var gameTimingText = gameFrameRate is null
                 ? "Game timing follows the ROM region (50 or 60 Hz)."
                 : $"Game timing stays fixed at {gameFrameRate:0.##} Hz.";
-            SDL.RenderDebugText(renderer, panel.X + 20, panel.Y + 284, gameTimingText);
-            SDL.RenderDebugText(renderer, panel.X + 20, panel.Y + 302, "Display settings do not change physics.");
+            DrawText(renderer, textRenderer, gameTimingText, panel.X + 20, panel.Y + 280, 12,
+                MakeUiColor(181, 194, 211));
+            DrawText(renderer, textRenderer, "Display settings do not change physics.",
+                panel.X + 20, panel.Y + 300, 12, MakeUiColor(181, 194, 211));
 
             var systemStatus = !string.IsNullOrWhiteSpace(audioError)
                 ? audioError
@@ -746,9 +844,9 @@ internal static class Program
                             : string.Empty;
             if (!string.IsNullOrWhiteSpace(systemStatus))
             {
-                SDL.SetRenderDrawColor(renderer, 242, 190, 128, 255);
-                SDL.RenderDebugText(renderer, panel.X + 20, panel.Y + panel.H - 32,
-                    Truncate(systemStatus, Math.Max(16, (int)((panel.W - 40) / 8))));
+                DrawText(renderer, textRenderer,
+                    Truncate(systemStatus, Math.Max(16, (int)((panel.W - 40) / 8))),
+                    panel.X + 20, panel.Y + panel.H - 32, 12, MakeUiColor(242, 190, 128));
             }
         }
         else
@@ -758,49 +856,60 @@ internal static class Program
                 || statusMessage.Contains("reserved", StringComparison.Ordinal)
                     ? statusMessage
                     : "Choose an action, then press a key.";
-            SDL.RenderDebugText(renderer, panel.X + 20, panel.Y + 92,
-                Truncate(controlsMessage, Math.Max(16, (int)((panel.W - 40) / 8))));
+            DrawText(renderer, textRenderer,
+                Truncate(controlsMessage, Math.Max(16, (int)((panel.W - 40) / 8))),
+                panel.X + 20, panel.Y + 91, 12, MakeUiColor(181, 194, 211));
             for (var index = 0; index < BindingRows.Length; index++)
             {
                 var row = BindingRows[index];
-                DrawBindingRow(renderer, GetBindingRow(panel, index), row,
+                DrawBindingRow(renderer, textRenderer, GetBindingRow(panel, index), row,
                     GetBoundKey(settings, row.Action), rebindingAction == row.Action);
             }
 
-            SDL.SetRenderDrawColor(renderer, 177, 189, 205, 255);
-            SDL.RenderDebugText(renderer, panel.X + 20, panel.Y + panel.H - 24,
-                "F1 opens ROMs  |  F2 toggles settings  |  Esc cancels");
+            DrawText(renderer, textRenderer, "F1 opens ROMs  |  F2 toggles settings  |  Esc cancels",
+                panel.X + 20, panel.Y + panel.H - 24, 11, MakeUiColor(177, 189, 205));
         }
     }
 
-    private static void DrawSettingsRow(IntPtr renderer, SDL.FRect row, string text)
+    private static void DrawSettingsRow(IntPtr renderer, UiTextRenderer? textRenderer, SDL.FRect row, string text)
     {
         SDL.SetRenderDrawColor(renderer, 28, 36, 50, 255);
         SDL.RenderFillRect(renderer, in row);
-        SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
-        SDL.RenderDebugText(renderer, row.X + 10, row.Y + 12, text);
-        SDL.RenderDebugText(renderer, row.X + row.W - 20, row.Y + 12, ">");
+        DrawText(renderer, textRenderer, text, row.X + 10, row.Y + 9, 13, MakeUiColor(248, 250, 255));
+        DrawText(renderer, textRenderer, ">", row.X + row.W - 20, row.Y + 8, 16, MakeUiColor(151, 166, 186));
     }
 
-    private static void DrawSettingsButton(IntPtr renderer, SDL.FRect button, string text)
+    private static void DrawSettingsButton(
+        IntPtr renderer,
+        UiTextRenderer? textRenderer,
+        SDL.FRect button,
+        string text,
+        float fontSize = 13)
     {
         SDL.SetRenderDrawColor(renderer, 52, 86, 132, 255);
         SDL.RenderFillRect(renderer, in button);
-        SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
-        SDL.RenderDebugText(renderer, button.X + (button.W / 2) - (text.Length * 4), button.Y + ((button.H - 8) / 2), text);
+        var textHeight = textRenderer?.Measure(text, fontSize, bold: true).Height ?? 8;
+        DrawCenteredText(renderer, textRenderer, text, button.X + (button.W / 2),
+            button.Y + ((button.H - textHeight) / 2), fontSize, MakeUiColor(255, 255, 255), bold: true);
     }
 
-    private static void DrawSettingsTab(IntPtr renderer, SDL.FRect tab, string text, bool selected)
+    private static void DrawSettingsTab(
+        IntPtr renderer,
+        UiTextRenderer? textRenderer,
+        SDL.FRect tab,
+        string text,
+        bool selected)
     {
         SDL.SetRenderDrawColor(renderer, selected ? (byte)56 : (byte)27,
             selected ? (byte)91 : (byte)37, selected ? (byte)142 : (byte)51, 255);
         SDL.RenderFillRect(renderer, in tab);
-        SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
-        SDL.RenderDebugText(renderer, tab.X + (tab.W / 2) - (text.Length * 4), tab.Y + 11, text);
+        DrawCenteredText(renderer, textRenderer, text, tab.X + (tab.W / 2), tab.Y + 7, 12,
+            MakeUiColor(255, 255, 255), bold: true);
     }
 
     private static void DrawBindingRow(
         IntPtr renderer,
+        UiTextRenderer? textRenderer,
         SDL.FRect row,
         BindingRow binding,
         SDL.Keycode key,
@@ -809,9 +918,8 @@ internal static class Program
         SDL.SetRenderDrawColor(renderer, isListening ? (byte)58 : (byte)28,
             isListening ? (byte)67 : (byte)36, isListening ? (byte)87 : (byte)50, 255);
         SDL.RenderFillRect(renderer, in row);
-        SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
         var label = string.IsNullOrEmpty(binding.Hint) ? binding.Label : $"{binding.Label}  {binding.Hint}";
-        SDL.RenderDebugText(renderer, row.X + 8, row.Y + 7, label);
+        DrawText(renderer, textRenderer, label, row.X + 8, row.Y + 4, 12, MakeUiColor(238, 243, 250));
 
         var keyButton = new SDL.FRect
         {
@@ -820,7 +928,7 @@ internal static class Program
             W = 98,
             H = row.H - 4,
         };
-        DrawSettingsButton(renderer, keyButton, isListening ? "PRESS KEY" : GetKeyName(key));
+        DrawSettingsButton(renderer, textRenderer, keyButton, isListening ? "PRESS KEY" : GetKeyName(key), 11);
     }
 
     private static void DrawSettingsCog(IntPtr renderer, SDL.FRect button, bool selected)
@@ -843,8 +951,12 @@ internal static class Program
                 centerX + (spoke.X * 14), centerY + (spoke.Y * 14));
         }
 
-        var hub = new SDL.FRect { X = centerX - 4, Y = centerY - 4, W = 8, H = 8 };
-        SDL.RenderFillRect(renderer, in hub);
+        var hubOutline = new SDL.FRect { X = centerX - 5, Y = centerY - 5, W = 10, H = 10 };
+        SDL.RenderRect(renderer, in hubOutline);
+        SDL.SetRenderDrawColor(renderer, selected ? (byte)56 : (byte)15,
+            selected ? (byte)91 : (byte)22, selected ? (byte)142 : (byte)35, 255);
+        var hubHole = new SDL.FRect { X = centerX - 2, Y = centerY - 2, W = 4, H = 4 };
+        SDL.RenderFillRect(renderer, in hubHole);
     }
 
     private static SDL.FRect GetResolutionRow(SDL.FRect panel) => new()
@@ -890,9 +1002,9 @@ internal static class Program
     private static SDL.FRect GetBindingRow(SDL.FRect panel, int index) => new()
     {
         X = panel.X + 12,
-        Y = panel.Y + 104 + (index * 22),
+        Y = panel.Y + 104 + (index * 24),
         W = panel.W - 24,
-        H = 21,
+        H = 23,
     };
 
     private static string GetAspectRatioName(GameAspectRatio aspectRatio)

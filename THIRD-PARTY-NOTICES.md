@@ -20,3 +20,7 @@ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+The Inter variable font at assets/fonts/Inter-Variable.ttf is distributed
+under the SIL Open Font License, version 1.1. Copyright 2020 The Inter Project
+Authors. The full license text is included at assets/fonts/OFL.txt.
