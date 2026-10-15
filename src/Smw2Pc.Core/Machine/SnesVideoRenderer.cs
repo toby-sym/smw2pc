@@ -38,6 +38,7 @@ public static class SnesVideoRenderer
             hardware,
             screenEnable,
             mode,
+            subScreen: false,
             brightness,
             rgbaPixels,
             pixelSources,
@@ -51,6 +52,7 @@ public static class SnesVideoRenderer
         SnesHardware hardware,
         byte screenEnable,
         int mode,
+        bool subScreen,
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
@@ -59,7 +61,7 @@ public static class SnesVideoRenderer
     {
         if (mode == 1)
         {
-            DrawModeOneLayers(hardware, screenEnable, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+            DrawModeOneLayers(hardware, screenEnable, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
         }
         else
         {
@@ -75,6 +77,7 @@ public static class SnesVideoRenderer
                     background,
                     mode,
                     priority: -1,
+                    subScreen,
                     brightness,
                     rgbaPixels,
                     pixelSources,
@@ -84,7 +87,7 @@ public static class SnesVideoRenderer
 
             if ((screenEnable & 0x10) != 0)
             {
-                DrawObjects(hardware, priority: -1, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+                DrawObjects(hardware, priority: -1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
             }
         }
     }
@@ -99,22 +102,14 @@ public static class SnesVideoRenderer
     {
         var registers = hardware.PpuRegisters.Span;
         var colorMath = registers[0x31];
-        if ((colorMath & 0x3F) == 0)
-        {
-            return;
-        }
-
         var colorWindowSelect = registers[0x30];
-        var colorWindowEnabled = (registers[0x25] & 0x30) != 0;
         var mainClipMode = (colorWindowSelect >> 6) & 0x03;
         var subMaskMode = (colorWindowSelect >> 4) & 0x03;
-        var clipMainEverywhere = !colorWindowEnabled && mainClipMode is 1 or 3;
-        var maskSubEverywhere = !colorWindowEnabled && subMaskMode is 1 or 3;
         var useSubScreen = (colorWindowSelect & 0x02) != 0;
         byte[]? subPixels = null;
         byte[]? subSources = null;
 
-        if (useSubScreen && !maskSubEverywhere && registers[0x2D] != 0)
+        if ((colorMath & 0x3F) != 0 && useSubScreen)
         {
             subPixels = new byte[mainPixels.Length];
             subSources = new byte[mainSources.Length];
@@ -128,6 +123,7 @@ public static class SnesVideoRenderer
                 hardware,
                 registers[0x2D],
                 registers[0x05] & 0x07,
+                subScreen: true,
                 brightness,
                 subPixels,
                 subSources,
@@ -135,17 +131,34 @@ public static class SnesVideoRenderer
                 colorRam);
         }
 
+        var mathEnabled = (colorMath & 0x3F) != 0;
         var fixedColor = ReadColorWord(hardware.FixedColor, brightness);
         var subtract = (colorMath & 0x80) != 0;
         var half = (colorMath & 0x40) != 0;
 
         for (var pixel = 0; pixel < Width * Height; pixel++)
         {
+            var x = pixel % Width;
+            var inColorWindow = IsColorWindowPixel(registers, x);
+            var offset = pixel * BytesPerPixel;
+            if (IsColorMathWindowRegion(mainClipMode, inColorWindow))
+            {
+                mainPixels[offset] = 0;
+                mainPixels[offset + 1] = 0;
+                mainPixels[offset + 2] = 0;
+            }
+
+            if (!mathEnabled)
+            {
+                continue;
+            }
+
             var source = mainSources[pixel];
             var layerMask = source switch
             {
                 0 => 0x20,
                 5 => 0x10,
+                6 => 0,
                 _ => 1 << (source - 1),
             };
             if ((colorMath & layerMask) == 0)
@@ -153,23 +166,138 @@ public static class SnesVideoRenderer
                 continue;
             }
 
-            var offset = pixel * BytesPerPixel;
-            var subIsTransparent = useSubScreen && (maskSubEverywhere || subSources is null || subSources[pixel] == 0);
-            var addend = useSubScreen && !subIsTransparent
+            var subIsTransparent = useSubScreen && IsColorMathWindowRegion(subMaskMode, inColorWindow);
+            if (subIsTransparent)
+            {
+                continue;
+            }
+
+            var addend = useSubScreen
                 ? (uint)(subPixels![offset] | (subPixels[offset + 1] << 8) | (subPixels[offset + 2] << 16))
                 : fixedColor;
-            var mainRed = (byte)(clipMainEverywhere ? 0 : mainPixels[offset]);
-            var mainGreen = (byte)(clipMainEverywhere ? 0 : mainPixels[offset + 1]);
-            var mainBlue = (byte)(clipMainEverywhere ? 0 : mainPixels[offset + 2]);
+            var mainRed = mainPixels[offset];
+            var mainGreen = mainPixels[offset + 1];
+            var mainBlue = mainPixels[offset + 2];
             var addRed = (byte)addend;
             var addGreen = (byte)(addend >> 8);
             var addBlue = (byte)(addend >> 16);
-            var applyHalf = half && !(useSubScreen && subIsTransparent);
+            var applyHalf = half;
 
             mainPixels[offset] = ApplyMathChannel(mainRed, addRed, subtract, applyHalf);
             mainPixels[offset + 1] = ApplyMathChannel(mainGreen, addGreen, subtract, applyHalf);
             mainPixels[offset + 2] = ApplyMathChannel(mainBlue, addBlue, subtract, applyHalf);
         }
+    }
+
+    private static bool IsColorWindowPixel(ReadOnlySpan<byte> registers, int x)
+    {
+        var windowSettings = registers[0x25];
+        var windowOneEnabled = (windowSettings & 0x10) != 0;
+        var windowTwoEnabled = (windowSettings & 0x40) != 0;
+        if (!windowOneEnabled && !windowTwoEnabled)
+        {
+            return false;
+        }
+
+        var windowOne = IsWindowPixel(
+            x,
+            registers[0x26],
+            registers[0x27],
+            inverted: (windowSettings & 0x20) != 0);
+        var windowTwo = IsWindowPixel(
+            x,
+            registers[0x28],
+            registers[0x29],
+            inverted: (windowSettings & 0x80) != 0);
+        if (!windowOneEnabled)
+        {
+            return windowTwo;
+        }
+
+        if (!windowTwoEnabled)
+        {
+            return windowOne;
+        }
+
+        return ApplyWindowLogic(windowOne, windowTwo, (registers[0x2B] >> 4) & 0x03);
+    }
+
+    private static bool IsColorMathWindowRegion(int regionMode, bool inColorWindow)
+    {
+        return regionMode switch
+        {
+            1 => !inColorWindow,
+            2 => inColorWindow,
+            3 => true,
+            _ => false,
+        };
+    }
+
+    private static bool IsLayerWindowed(ReadOnlySpan<byte> registers, int layer, bool subScreen, int x)
+    {
+        var screenWindowRegister = registers[subScreen ? 0x2F : 0x2E];
+        if ((screenWindowRegister & (1 << layer)) == 0)
+        {
+            return false;
+        }
+
+        var selectorRegister = layer switch
+        {
+            0 or 1 => registers[0x23],
+            2 or 3 => registers[0x24],
+            _ => registers[0x25],
+        };
+        var selectorShift = layer switch
+        {
+            0 or 2 => 0,
+            1 or 3 => 4,
+            _ => 0,
+        };
+        var windowOneEnabled = (selectorRegister & (1 << selectorShift)) != 0;
+        var windowTwoEnabled = (selectorRegister & (1 << (selectorShift + 2))) != 0;
+        if (!windowOneEnabled && !windowTwoEnabled)
+        {
+            return false;
+        }
+
+        var windowOne = IsWindowPixel(
+            x,
+            registers[0x26],
+            registers[0x27],
+            (selectorRegister & (1 << (selectorShift + 1))) != 0);
+        var windowTwo = IsWindowPixel(
+            x,
+            registers[0x28],
+            registers[0x29],
+            (selectorRegister & (1 << (selectorShift + 3))) != 0);
+        if (!windowOneEnabled)
+        {
+            return windowTwo;
+        }
+
+        if (!windowTwoEnabled)
+        {
+            return windowOne;
+        }
+
+        return ApplyWindowLogic(windowOne, windowTwo, (registers[0x2A] >> (layer * 2)) & 0x03);
+    }
+
+    private static bool IsWindowPixel(int x, int left, int right, bool inverted)
+    {
+        var inside = left <= right && x >= left && x <= right;
+        return inverted ? !inside : inside;
+    }
+
+    private static bool ApplyWindowLogic(bool windowOne, bool windowTwo, int logic)
+    {
+        return logic switch
+        {
+            1 => windowOne && windowTwo,
+            2 => windowOne ^ windowTwo,
+            3 => windowOne == windowTwo,
+            _ => windowOne || windowTwo,
+        };
     }
 
     private static byte ApplyMathChannel(byte main, byte addend, bool subtract, bool half)
@@ -191,6 +319,7 @@ public static class SnesVideoRenderer
     private static void DrawModeOneLayers(
         SnesHardware hardware,
         byte screenEnable,
+        bool subScreen,
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
@@ -198,23 +327,23 @@ public static class SnesVideoRenderer
         ReadOnlySpan<byte> colorRam)
     {
         var bg3HighPriority = (hardware.PpuRegisters.Span[0x05] & 0x08) != 0;
-        DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 0, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawObjectsIfEnabled(hardware, screenEnable, priority: 0, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
         if (!bg3HighPriority)
         {
-            DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 1, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+            DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
         }
 
-        DrawObjectsIfEnabled(hardware, screenEnable, priority: 1, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, screenEnable, 1, priority: 0, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, screenEnable, 0, priority: 0, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawObjectsIfEnabled(hardware, screenEnable, priority: 2, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, screenEnable, 1, priority: 1, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawBackgroundIfEnabled(hardware, screenEnable, 0, priority: 1, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
-        DrawObjectsIfEnabled(hardware, screenEnable, priority: 3, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 1, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 0, priority: 0, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 2, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 1, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 0, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 3, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
         if (bg3HighPriority)
         {
-            DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 1, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+            DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 1, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
         }
     }
 
@@ -223,6 +352,7 @@ public static class SnesVideoRenderer
         byte screenEnable,
         int background,
         int priority,
+        bool subScreen,
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
@@ -234,13 +364,14 @@ public static class SnesVideoRenderer
             return;
         }
 
-        DrawBackground(hardware, background, mode: 1, priority, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+        DrawBackground(hardware, background, mode: 1, priority, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
     }
 
     private static void DrawObjectsIfEnabled(
         SnesHardware hardware,
         byte screenEnable,
         int priority,
+        bool subScreen,
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
@@ -249,13 +380,14 @@ public static class SnesVideoRenderer
     {
         if ((screenEnable & 0x10) != 0)
         {
-            DrawObjects(hardware, priority, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
+            DrawObjects(hardware, priority, subScreen, brightness, rgbaPixels, pixelSources, videoRam, colorRam);
         }
     }
 
     private static void DrawObjects(
         SnesHardware hardware,
         int priority,
+        bool subScreen,
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
@@ -310,6 +442,11 @@ public static class SnesVideoRenderer
                         continue;
                     }
 
+                    if (IsLayerWindowed(registers, 4, subScreen, screenX))
+                    {
+                        continue;
+                    }
+
                     var sourceX = horizontalFlip ? objectSize - 1 - objectX : objectX;
                     var tileNumber = (tile + ((sourceY / 8) * 16) + (sourceX / 8)) & 0xFF;
                     var tileAddress = (tileBase + (tileNumber * 32)) & 0xFFFF;
@@ -322,7 +459,7 @@ public static class SnesVideoRenderer
                     var color = ReadColor(colorRam, 128 + (palette * 16) + colorIndex, brightness, forcedBlank: false);
                     var pixelIndex = (screenY * Width) + screenX;
                     WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, color);
-                    pixelSources[pixelIndex] = 5;
+                    pixelSources[pixelIndex] = palette >= 4 ? (byte)5 : (byte)6;
                 }
             }
         }
@@ -348,6 +485,7 @@ public static class SnesVideoRenderer
         int background,
         int mode,
         int priority,
+        bool subScreen,
         int brightness,
         Span<byte> rgbaPixels,
         Span<byte> pixelSources,
@@ -379,6 +517,11 @@ public static class SnesVideoRenderer
             var localY = worldY % tileHeight;
             for (var screenX = 0; screenX < Width; screenX++)
             {
+                if (IsLayerWindowed(registers, background, subScreen, screenX))
+                {
+                    continue;
+                }
+
                 var worldX = (screenX + horizontalOffset) % pixelWidth;
                 var cellX = worldX / tileWidth;
                 var localX = worldX % tileWidth;

@@ -162,11 +162,6 @@ internal static class Program
 
                     if (advancedFrames > 0)
                     {
-                        if (frameAccumulator >= frameDuration)
-                        {
-                            frameAccumulator %= frameDuration;
-                        }
-
                         SnesVideoRenderer.RenderFrame(cpuRunner.MemoryBus.Hardware, frameBuffer);
                         if (!SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, SnesVideoRenderer.Width * SnesVideoRenderer.BytesPerPixel))
                         {
