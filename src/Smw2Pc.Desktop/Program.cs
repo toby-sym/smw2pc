@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using SDL3;
 using Smw2Pc.Core.Cpu;
@@ -10,6 +11,7 @@ internal static class Program
     private const int WindowWidth = 800;
     private const int WindowHeight = 736;
     private const int InstructionsPerFrame = 18000;
+    private const int MaximumCatchUpFrames = 5;
 
     private static readonly ConcurrentQueue<FileDialogResult> PendingFileDialogResults = new();
     private static readonly SDL.DialogFileCallback RomFileDialogCallback = OnRomFileDialogCompleted;
@@ -61,9 +63,15 @@ internal static class Program
         var frameBuffer = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
         var gameArea = new SDL.FRect { X = 16, Y = 16, W = 768, H = 672 };
         var openButton = new SDL.FRect { X = 16, Y = 696, W = 112, H = 28 };
+        var previousTimestamp = Stopwatch.GetTimestamp();
+        var frameAccumulator = 0.0;
 
         while (running)
         {
+            var currentTimestamp = Stopwatch.GetTimestamp();
+            var elapsedSeconds = (double)(currentTimestamp - previousTimestamp) / Stopwatch.Frequency;
+            previousTimestamp = currentTimestamp;
+
             while (SDL.PollEvent(out var @event))
             {
                 var eventType = (SDL.EventType)@event.Type;
@@ -120,6 +128,7 @@ internal static class Program
                     var memoryBus = new SnesMemoryBus(loadedRom);
                     cpuRunner = new NativeCpuRunner(memoryBus);
                     memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
+                    frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
                     statusMessage = $"Running {loadedRom.Header.Title}";
                 }
                 catch (Exception exception) when (
@@ -138,18 +147,40 @@ internal static class Program
             {
                 try
                 {
-                    cpuRunner.Run(InstructionsPerFrame);
-                    SnesVideoRenderer.RenderFrame(cpuRunner.MemoryBus.Hardware, frameBuffer);
-                    if (!SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, SnesVideoRenderer.Width * SnesVideoRenderer.BytesPerPixel))
+                    var frameDuration = 1.0 / loadedRom!.Header.FrameRateHz;
+                    frameAccumulator += elapsedSeconds;
+                    var advancedFrames = 0;
+                    while (frameAccumulator >= frameDuration && advancedFrames < MaximumCatchUpFrames)
                     {
-                        statusMessage = $"Could not update the game frame: {SDL.GetError()}";
+                        cpuRunner.Run(InstructionsPerFrame);
+                        frameAccumulator -= frameDuration;
+                        advancedFrames++;
+                    }
+
+                    if (advancedFrames > 0)
+                    {
+                        if (frameAccumulator >= frameDuration)
+                        {
+                            frameAccumulator %= frameDuration;
+                        }
+
+                        SnesVideoRenderer.RenderFrame(cpuRunner.MemoryBus.Hardware, frameBuffer);
+                        if (!SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, SnesVideoRenderer.Width * SnesVideoRenderer.BytesPerPixel))
+                        {
+                            statusMessage = $"Could not update the game frame: {SDL.GetError()}";
+                        }
                     }
                 }
                 catch (Exception exception) when (exception is NotSupportedException or InvalidOperationException)
                 {
                     statusMessage = $"Execution stopped at {cpuRunner.State.ProgramBank:X2}:{cpuRunner.State.ProgramCounter:X4}: {exception.Message}";
                     cpuRunner = null;
+                    frameAccumulator = 0;
                 }
+            }
+            else
+            {
+                frameAccumulator = 0;
             }
 
             SDL.SetRenderDrawColor(renderer, 24, 28, 40, 255);

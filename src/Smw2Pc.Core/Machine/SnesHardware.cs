@@ -6,8 +6,8 @@ public sealed class SnesHardware
     private const int VideoRamSize = 0x10000;
     private const int ControllerCount = 2;
     private const int InstructionsPerFrame = 18000;
-    private const int ScanlinesPerFrame = 262;
-    private const int VBlankStartInstruction = 16000;
+    private readonly int scanlinesPerFrame;
+    private readonly int vBlankStartInstruction;
 
     private readonly byte[] workRam = new byte[WorkRamSize];
     private readonly byte[] videoRam = new byte[VideoRamSize];
@@ -29,6 +29,7 @@ public sealed class SnesHardware
     private ushort videoRamWordAddress;
     private ushort objectAttributeWordAddress;
     private byte colorRamAddress;
+    private byte colorRamLowByte;
     private bool colorRamHighByte;
     private bool objectAttributeHighByte;
     private bool backgroundScrollHighByte;
@@ -36,6 +37,12 @@ public sealed class SnesHardware
     private bool inVBlank;
     private bool nmiFlag;
     private bool nmiRequested;
+
+    public SnesHardware(bool palRegion = false)
+    {
+        scanlinesPerFrame = palRegion ? 312 : 262;
+        vBlankStartInstruction = InstructionsPerFrame * 225 / scanlinesPerFrame;
+    }
 
     public ReadOnlyMemory<byte> VideoRam => videoRam;
 
@@ -81,7 +88,7 @@ public sealed class SnesHardware
         var instructionsRemaining = instructionCount;
         while (instructionsRemaining > 0)
         {
-            var nextBoundary = inVBlank ? InstructionsPerFrame : VBlankStartInstruction;
+            var nextBoundary = inVBlank ? InstructionsPerFrame : vBlankStartInstruction;
             var untilBoundary = nextBoundary - frameInstructionPosition;
             var advance = Math.Min(instructionsRemaining, untilBoundary);
             frameInstructionPosition += advance;
@@ -168,7 +175,7 @@ public sealed class SnesHardware
 
         if (address == 0x4212)
         {
-            var horizontalPosition = (frameInstructionPosition * ScanlinesPerFrame) % InstructionsPerFrame;
+            var horizontalPosition = (frameInstructionPosition * scanlinesPerFrame) % InstructionsPerFrame;
             var inHBlank = horizontalPosition >= (InstructionsPerFrame * 3 / 4);
             value = (byte)(
                 (openBus & 0x3E)
@@ -388,14 +395,18 @@ public sealed class SnesHardware
                 colorRamHighByte = false;
                 break;
             case 0x2122:
-                var colorRamByteAddress = colorRamAddress * 2 + (colorRamHighByte ? 1 : 0);
-                colorRam[colorRamByteAddress] = colorRamHighByte ? (byte)(value & 0x7F) : value;
-                colorRamHighByte = !colorRamHighByte;
                 if (!colorRamHighByte)
                 {
-                    colorRamAddress++;
+                    colorRamLowByte = value;
+                    colorRamHighByte = true;
+                    break;
                 }
 
+                var colorRamByteAddress = colorRamAddress * 2;
+                colorRam[colorRamByteAddress] = colorRamLowByte;
+                colorRam[colorRamByteAddress + 1] = (byte)(value & 0x7F);
+                colorRamHighByte = false;
+                colorRamAddress++;
                 break;
         }
     }

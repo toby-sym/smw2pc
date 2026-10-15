@@ -33,31 +33,102 @@ public static class SnesVideoRenderer
             return;
         }
 
-        for (var background = 3; background >= 0; background--)
+        if (mode == 1)
         {
-            if ((screenEnable & (1 << background)) == 0)
+            DrawModeOneLayers(hardware, screenEnable, brightness, rgbaPixels, videoRam, colorRam);
+        }
+        else
+        {
+            for (var background = 3; background >= 0; background--)
             {
-                continue;
+                if ((screenEnable & (1 << background)) == 0)
+                {
+                    continue;
+                }
+
+                DrawBackground(
+                    hardware,
+                    background,
+                    mode,
+                    priority: -1,
+                    brightness,
+                    rgbaPixels,
+                    videoRam,
+                    colorRam);
             }
 
-            DrawBackground(
-                hardware,
-                background,
-                mode,
-                brightness,
-                rgbaPixels,
-                videoRam,
-                colorRam);
+            if ((screenEnable & 0x10) != 0)
+            {
+                DrawObjects(hardware, priority: -1, brightness, rgbaPixels, videoRam, colorRam);
+            }
+        }
+    }
+
+    private static void DrawModeOneLayers(
+        SnesHardware hardware,
+        byte screenEnable,
+        int brightness,
+        Span<byte> rgbaPixels,
+        ReadOnlySpan<byte> videoRam,
+        ReadOnlySpan<byte> colorRam)
+    {
+        var bg3HighPriority = (hardware.PpuRegisters.Span[0x05] & 0x08) != 0;
+        DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 0, brightness, rgbaPixels, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 0, brightness, rgbaPixels, videoRam, colorRam);
+        if (!bg3HighPriority)
+        {
+            DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 1, brightness, rgbaPixels, videoRam, colorRam);
         }
 
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 1, brightness, rgbaPixels, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 1, priority: 0, brightness, rgbaPixels, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 0, priority: 0, brightness, rgbaPixels, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 2, brightness, rgbaPixels, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 1, priority: 1, brightness, rgbaPixels, videoRam, colorRam);
+        DrawBackgroundIfEnabled(hardware, screenEnable, 0, priority: 1, brightness, rgbaPixels, videoRam, colorRam);
+        DrawObjectsIfEnabled(hardware, screenEnable, priority: 3, brightness, rgbaPixels, videoRam, colorRam);
+        if (bg3HighPriority)
+        {
+            DrawBackgroundIfEnabled(hardware, screenEnable, 2, priority: 1, brightness, rgbaPixels, videoRam, colorRam);
+        }
+    }
+
+    private static void DrawBackgroundIfEnabled(
+        SnesHardware hardware,
+        byte screenEnable,
+        int background,
+        int priority,
+        int brightness,
+        Span<byte> rgbaPixels,
+        ReadOnlySpan<byte> videoRam,
+        ReadOnlySpan<byte> colorRam)
+    {
+        if ((screenEnable & (1 << background)) == 0)
+        {
+            return;
+        }
+
+        DrawBackground(hardware, background, mode: 1, priority, brightness, rgbaPixels, videoRam, colorRam);
+    }
+
+    private static void DrawObjectsIfEnabled(
+        SnesHardware hardware,
+        byte screenEnable,
+        int priority,
+        int brightness,
+        Span<byte> rgbaPixels,
+        ReadOnlySpan<byte> videoRam,
+        ReadOnlySpan<byte> colorRam)
+    {
         if ((screenEnable & 0x10) != 0)
         {
-            DrawObjects(hardware, brightness, rgbaPixels, videoRam, colorRam);
+            DrawObjects(hardware, priority, brightness, rgbaPixels, videoRam, colorRam);
         }
     }
 
     private static void DrawObjects(
         SnesHardware hardware,
+        int priority,
         int brightness,
         Span<byte> rgbaPixels,
         ReadOnlySpan<byte> videoRam,
@@ -76,6 +147,11 @@ public static class SnesVideoRenderer
             var y = objectRam[objectAddress + 1];
             var tile = objectRam[objectAddress + 2];
             var attributes = objectRam[objectAddress + 3];
+            if (priority >= 0 && ((attributes >> 4) & 0x03) != priority)
+            {
+                continue;
+            }
+
             var highBits = (objectRam[512 + (objectIndex / 4)] >> ((objectIndex & 3) * 2)) & 0x03;
             x |= (highBits & 1) << 8;
             var large = (highBits & 2) != 0;
@@ -141,6 +217,7 @@ public static class SnesVideoRenderer
         SnesHardware hardware,
         int background,
         int mode,
+        int priority,
         int brightness,
         Span<byte> rgbaPixels,
         ReadOnlySpan<byte> videoRam,
@@ -176,6 +253,11 @@ public static class SnesVideoRenderer
                 var localX = worldX % tileWidth;
                 var mapIndex = GetMapByteIndex(mapBase, mapWidth, cellX, cellY);
                 var tileEntry = (ushort)(videoRam[mapIndex] | (videoRam[mapIndex + 1] << 8));
+                if (priority >= 0 && ((tileEntry & 0x2000) != 0) != (priority != 0))
+                {
+                    continue;
+                }
+
                 var horizontalFlip = (tileEntry & 0x4000) != 0;
                 var verticalFlip = (tileEntry & 0x8000) != 0;
                 if (horizontalFlip)

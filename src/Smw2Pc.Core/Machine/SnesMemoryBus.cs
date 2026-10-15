@@ -24,7 +24,7 @@ public sealed class SnesMemoryBus
         }
 
         romData = rom.Data;
-        Hardware = new SnesHardware();
+        Hardware = new SnesHardware(rom.Header.IsPalRegion);
     }
 
     public SnesHardware Hardware { get; }
