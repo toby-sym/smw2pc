@@ -28,11 +28,6 @@ public sealed class NativeBlockTranslator
         }
 
         var startAddress = ComposeAddress(state.ProgramBank, state.ProgramCounter);
-        if (!memoryBus.IsCartridgeRomAddress(startAddress))
-        {
-            throw new NotSupportedException("This native translator pass only translates code mapped from cartridge ROM.");
-        }
-
         var method = new DynamicMethod(
             $"native_block_{startAddress:X6}",
             typeof(void),
@@ -82,14 +77,14 @@ public sealed class NativeBlockTranslator
     private static void EmitInstruction(
         ILGenerator il,
         CpuInstructionDefinition definition,
-        ushort operand,
+        uint operand,
         ushort nextProgramCounter)
     {
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldarg_1);
         il.Emit(OpCodes.Ldc_I4, (int)definition.Operation);
         il.Emit(OpCodes.Ldc_I4, (int)definition.AddressingMode);
-        il.Emit(OpCodes.Ldc_I4, operand);
+        il.Emit(OpCodes.Ldc_I4, unchecked((int)operand));
         il.Emit(OpCodes.Ldc_I4, nextProgramCounter);
         il.Emit(OpCodes.Call, ExecuteInstructionMethod);
     }
@@ -102,7 +97,7 @@ public sealed class NativeBlockTranslator
         il.Emit(OpCodes.Stfld, ProgramCounterField);
     }
 
-    private static ushort ReadOperand(
+    private static uint ReadOperand(
         SnesMemoryBus memoryBus,
         CpuState state,
         CpuAddressingMode addressingMode,
@@ -125,10 +120,24 @@ public sealed class NativeBlockTranslator
             or CpuAddressingMode.DirectPage
             or CpuAddressingMode.DirectPageX
             or CpuAddressingMode.DirectPageY
+            or CpuAddressingMode.DirectPageIndexedIndirect
+            or CpuAddressingMode.DirectPageIndirect
+            or CpuAddressingMode.DirectPageIndirectY
+            or CpuAddressingMode.DirectPageIndirectLong
+            or CpuAddressingMode.DirectPageIndirectLongY
+            or CpuAddressingMode.StackRelative
+            or CpuAddressingMode.StackRelativeIndirectY
             or CpuAddressingMode.Relative => ReadProgramByte(memoryBus, state.ProgramBank, ref programCounter),
+            CpuAddressingMode.RelativeLong => ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter),
             CpuAddressingMode.Absolute
             or CpuAddressingMode.AbsoluteX
-            or CpuAddressingMode.AbsoluteY => ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter),
+            or CpuAddressingMode.AbsoluteY
+            or CpuAddressingMode.AbsoluteIndirect
+            or CpuAddressingMode.AbsoluteIndexedIndirect
+            or CpuAddressingMode.AbsoluteIndirectLong => ReadAbsoluteAddress(memoryBus, state.ProgramBank, ref programCounter),
+            CpuAddressingMode.BlockMove => ReadBlockMoveBanks(memoryBus, state.ProgramBank, ref programCounter),
+            CpuAddressingMode.Long
+            or CpuAddressingMode.LongX => ReadLongAddress(memoryBus, state.ProgramBank, ref programCounter),
             _ => throw new ArgumentOutOfRangeException(nameof(addressingMode), addressingMode, "Unsupported addressing mode."),
         };
     }
@@ -156,14 +165,24 @@ public sealed class NativeBlockTranslator
         return (ushort)(low | (high << 8));
     }
 
+    private static uint ReadLongAddress(SnesMemoryBus memoryBus, byte programBank, ref ushort programCounter)
+    {
+        var low = ReadProgramByte(memoryBus, programBank, ref programCounter);
+        var middle = ReadProgramByte(memoryBus, programBank, ref programCounter);
+        var high = ReadProgramByte(memoryBus, programBank, ref programCounter);
+        return (uint)(low | (middle << 8) | (high << 16));
+    }
+
+    private static uint ReadBlockMoveBanks(SnesMemoryBus memoryBus, byte programBank, ref ushort programCounter)
+    {
+        var destinationBank = ReadProgramByte(memoryBus, programBank, ref programCounter);
+        var sourceBank = ReadProgramByte(memoryBus, programBank, ref programCounter);
+        return (uint)(destinationBank | (sourceBank << 8));
+    }
+
     private static byte ReadProgramByte(SnesMemoryBus memoryBus, byte programBank, ref ushort programCounter)
     {
         var address = ComposeAddress(programBank, programCounter);
-        if (!memoryBus.IsCartridgeRomAddress(address))
-        {
-            throw new NotSupportedException($"Instruction data at 0x{address:X6} is not mapped from cartridge ROM.");
-        }
-
         var value = memoryBus.ReadByte(address);
         programCounter = unchecked((ushort)(programCounter + 1));
         return value;
@@ -173,8 +192,22 @@ public sealed class NativeBlockTranslator
     {
         return operation is CpuOperation.Stop
             or CpuOperation.JumpAbsolute
+            or CpuOperation.JumpIndirect
+            or CpuOperation.JumpAbsoluteIndexedIndirect
+            or CpuOperation.JumpLong
+            or CpuOperation.JumpIndirectLong
             or CpuOperation.CallAbsolute
+            or CpuOperation.CallAbsoluteIndexedIndirect
+            or CpuOperation.CallLong
+            or CpuOperation.Break
+            or CpuOperation.Cop
             or CpuOperation.ReturnFromSubroutine
+            or CpuOperation.ReturnFromSubroutineLong
+            or CpuOperation.ReturnFromInterrupt
+            or CpuOperation.BranchLong
+            or CpuOperation.BlockMoveNext
+            or CpuOperation.BlockMovePrevious
+            or CpuOperation.WaitForInterrupt
             or CpuOperation.BranchPlus
             or CpuOperation.BranchMinus
             or CpuOperation.BranchOverflowClear

@@ -174,6 +174,7 @@ public sealed class SnesRom
 
         var title = Encoding.ASCII.GetString(titleBytes).TrimEnd('\0', ' ').Trim();
         var mapMode = romData[offset + 0x15];
+        var countryCode = romData[offset + 0x19];
 
         if (string.IsNullOrWhiteSpace(title) || mapMode is < 0x20 or > 0x3F)
         {
@@ -184,7 +185,7 @@ public sealed class SnesRom
         var checksum = BinaryPrimitives.ReadUInt16LittleEndian(romData.Slice(offset + 0x1E, 2));
         var checksumPairValid = (complement ^ checksum) == ushort.MaxValue;
 
-        header = new SnesRomHeader(title, mapMode, offset, complement, checksum, checksumPairValid);
+        header = new SnesRomHeader(title, mapMode, countryCode, offset, complement, checksum, checksumPairValid);
         return true;
     }
 }
@@ -192,10 +193,15 @@ public sealed class SnesRom
 public sealed record SnesRomHeader(
     string Title,
     byte MapMode,
+    byte CountryCode,
     int HeaderOffset,
     ushort Complement,
     ushort Checksum,
     bool HasValidChecksumPair)
 {
+    public bool IsPalRegion => CountryCode is >= 0x02 and <= 0x0C or 0x11;
+
+    public double FrameRateHz => IsPalRegion ? 50.00697 : 60.0988;
+
     internal int HeaderScore => 2 + (HasValidChecksumPair ? 2 : 0);
 }

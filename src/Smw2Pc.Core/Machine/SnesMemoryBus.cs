@@ -24,7 +24,7 @@ public sealed class SnesMemoryBus
         }
 
         romData = rom.Data;
-        Hardware = new SnesHardware();
+        Hardware = new SnesHardware(rom.Header.IsPalRegion);
     }
 
     public SnesHardware Hardware { get; }
@@ -90,7 +90,7 @@ public sealed class SnesMemoryBus
 
         if (IsSystemBank(bank))
         {
-            Hardware.TryWriteRegister((ushort)offset, value);
+            Hardware.TryWriteRegister(this, (ushort)offset, value);
         }
     }
 
