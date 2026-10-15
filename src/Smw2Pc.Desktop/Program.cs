@@ -8,16 +8,26 @@ using Smw2Pc.Core.Rom;
 
 internal static class Program
 {
-    private const int WindowWidth = 800;
-    private const int WindowHeight = 736;
     private const int InstructionsPerFrame = 18000;
     private const int MaximumCatchUpFrames = 5;
+    private const int ToolbarHeight = 72;
+    private const int WindowMargin = 16;
+    private static readonly long SettingsSaveDelayTicks = Stopwatch.Frequency / 2;
+    private static readonly (int Width, int Height)[] ResolutionPresets =
+    [
+        (800, 600),
+        (960, 720),
+        (1280, 720),
+        (1280, 960),
+        (1920, 1080),
+    ];
 
     private static readonly ConcurrentQueue<FileDialogResult> PendingFileDialogResults = new();
     private static readonly SDL.DialogFileCallback RomFileDialogCallback = OnRomFileDialogCompleted;
 
     private static int Main()
     {
+        var settings = DesktopSettings.Load();
         if (!SDL.Init(SDL.InitFlags.Video))
         {
             Console.Error.WriteLine($"SDL could not initialize: {SDL.GetError()}");
@@ -26,9 +36,9 @@ internal static class Program
 
         if (!SDL.CreateWindowAndRenderer(
                 "SMW2PC",
-                WindowWidth,
-                WindowHeight,
-                0,
+                settings.WindowWidth,
+                settings.WindowHeight,
+                SDL.WindowFlags.Resizable,
                 out var window,
                 out var renderer))
         {
@@ -36,6 +46,8 @@ internal static class Program
             SDL.Quit();
             return 1;
         }
+
+        SDL.SetWindowMinimumSize(window, 640, 480);
 
         var gameTexture = SDL.CreateTexture(
             renderer,
@@ -52,8 +64,8 @@ internal static class Program
             return 1;
         }
 
-        SDL.SetTextureScaleMode(gameTexture, SDL.ScaleMode.Nearest);
-        SDL.SetRenderVSync(renderer, 1);
+        SDL.SetTextureScaleMode(gameTexture, GetScaleMode(settings));
+        SDL.SetRenderVSync(renderer, 0);
 
         var audioError = string.Empty;
         var audioStream = IntPtr.Zero;
@@ -94,16 +106,44 @@ internal static class Program
         NativeCpuRunner? cpuRunner = null;
         SnesControllerButtons controllerButtons = SnesControllerButtons.None;
         var frameBuffer = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
-        var gameArea = new SDL.FRect { X = 16, Y = 16, W = 768, H = 672 };
-        var openButton = new SDL.FRect { X = 16, Y = 696, W = 112, H = 28 };
         var previousTimestamp = Stopwatch.GetTimestamp();
         var frameAccumulator = 0.0;
+        var nextPresentationTimestamp = previousTimestamp;
+        var settingsOpen = false;
+        var settingsSavePending = false;
+        var settingsSaveTimestamp = 0L;
 
         while (running)
         {
             var currentTimestamp = Stopwatch.GetTimestamp();
             var elapsedSeconds = (double)(currentTimestamp - previousTimestamp) / Stopwatch.Frequency;
             previousTimestamp = currentTimestamp;
+            SDL.GetWindowSize(window, out var windowWidth, out var windowHeight);
+            if (!SDL.GetCurrentRenderOutputSize(renderer, out var outputWidth, out var outputHeight)
+                || outputWidth <= 0
+                || outputHeight <= 0)
+            {
+                outputWidth = windowWidth;
+                outputHeight = windowHeight;
+            }
+
+            var outputScaleX = windowWidth > 0 ? (float)outputWidth / windowWidth : 1;
+            var outputScaleY = windowHeight > 0 ? (float)outputHeight / windowHeight : 1;
+            var openButton = new SDL.FRect
+            {
+                X = WindowMargin,
+                Y = outputHeight - 58,
+                W = 112,
+                H = 28,
+            };
+            var settingsButton = new SDL.FRect
+            {
+                X = WindowMargin + 120,
+                Y = outputHeight - 58,
+                W = 112,
+                H = 28,
+            };
+            var settingsPanel = GetSettingsPanel(outputWidth);
 
             while (SDL.PollEvent(out var @event))
             {
@@ -112,9 +152,17 @@ internal static class Program
                 {
                     running = false;
                 }
+                else if (eventType == SDL.EventType.WindowResized)
+                {
+                    SDL.GetWindowSize(window, out var resizedWidth, out var resizedHeight);
+                    settings.WindowWidth = resizedWidth;
+                    settings.WindowHeight = resizedHeight;
+                    settingsSavePending = true;
+                    settingsSaveTimestamp = Stopwatch.GetTimestamp();
+                }
                 else if (eventType == SDL.EventType.MouseButtonDown
                     && @event.Button.Button == 1
-                    && IsInside(@event.Button.X, @event.Button.Y, openButton))
+                    && IsInside(@event.Button.X * outputScaleX, @event.Button.Y * outputScaleY, openButton))
                 {
                     SDL.ShowOpenFileDialog(
                         RomFileDialogCallback,
@@ -125,6 +173,29 @@ internal static class Program
                         null!,
                         false);
                 }
+                else if (eventType == SDL.EventType.MouseButtonDown && @event.Button.Button == 1)
+                {
+                    var mouseX = @event.Button.X * outputScaleX;
+                    var mouseY = @event.Button.Y * outputScaleY;
+                    if (IsInside(mouseX, mouseY, settingsButton))
+                    {
+                        settingsOpen = !settingsOpen;
+                    }
+                    else if (settingsOpen && HandleSettingsClick(
+                        mouseX,
+                        mouseY,
+                        settingsPanel,
+                        settings,
+                        window,
+                        gameTexture,
+                        ref settingsOpen,
+                        ref statusMessage))
+                    {
+                        settingsSavePending = true;
+                        settingsSaveTimestamp = Stopwatch.GetTimestamp();
+                        nextPresentationTimestamp = settingsSaveTimestamp;
+                    }
+                }
                 else if (eventType is SDL.EventType.KeyDown or SDL.EventType.KeyUp)
                 {
                     var isDown = eventType == SDL.EventType.KeyDown;
@@ -132,6 +203,14 @@ internal static class Program
                     if (isDown && key == SDL.Keycode.F1)
                     {
                         ShowRomFileDialog(window);
+                    }
+                    else if (isDown && key == SDL.Keycode.F2)
+                    {
+                        settingsOpen = !settingsOpen;
+                    }
+                    else if (isDown && key == SDL.Keycode.Escape)
+                    {
+                        settingsOpen = false;
                     }
                     else
                     {
@@ -168,9 +247,10 @@ internal static class Program
 
                     frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
                     previousTimestamp = Stopwatch.GetTimestamp();
+                    nextPresentationTimestamp = previousTimestamp;
                     elapsedSeconds = 0;
                     var regionName = loadedRom.Header.IsPalRegion ? "PAL" : "NTSC";
-                    statusMessage = $"Running {loadedRom.Header.Title} at {loadedRom.Header.FrameRateHz:0.##} Hz ({regionName})";
+                    statusMessage = $"Running {loadedRom.Header.Title} · {loadedRom.Header.FrameRateHz:0.##} Hz game timing ({regionName})";
                     if (!string.IsNullOrEmpty(audioError))
                     {
                         statusMessage += $" · {audioError}";
@@ -236,34 +316,100 @@ internal static class Program
                 frameAccumulator = 0;
             }
 
-            SDL.SetRenderDrawColor(renderer, 24, 28, 40, 255);
-            SDL.RenderClear(renderer);
+            var presentationTimestamp = Stopwatch.GetTimestamp();
+            var renderIntervalTicks = Stopwatch.Frequency / settings.RenderFrameRate;
+            if (presentationTimestamp >= nextPresentationTimestamp)
+            {
+                if (!SDL.GetCurrentRenderOutputSize(renderer, out outputWidth, out outputHeight)
+                    || outputWidth <= 0
+                    || outputHeight <= 0)
+                {
+                    outputWidth = windowWidth;
+                    outputHeight = windowHeight;
+                }
 
-            if (cpuRunner is not null)
-            {
-                SDL.RenderTexture(renderer, gameTexture, IntPtr.Zero, in gameArea);
-            }
-            else if (loadedRom is not null)
-            {
-                SDL.RenderTexture(renderer, gameTexture, IntPtr.Zero, in gameArea);
-            }
-            else
-            {
+                var gameArea = GetGameArea(outputWidth, outputHeight, settings.AspectRatio);
+                openButton.Y = outputHeight - 58;
+                settingsButton.Y = outputHeight - 58;
+                settingsPanel = GetSettingsPanel(outputWidth);
+                SDL.SetRenderDrawColor(renderer, 24, 28, 40, 255);
+                SDL.RenderClear(renderer);
+
+                if (cpuRunner is not null || loadedRom is not null)
+                {
+                    SDL.RenderTexture(renderer, gameTexture, IntPtr.Zero, in gameArea);
+                }
+                else
+                {
+                    SDL.SetRenderDrawColor(renderer, 16, 20, 30, 255);
+                    SDL.RenderFillRect(renderer, in gameArea);
+                    SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                    SDL.RenderDebugText(renderer, gameArea.X + 16, gameArea.Y + 24, "SMW2PC");
+                    SDL.RenderDebugText(renderer, gameArea.X + 16, gameArea.Y + 48, "Open a Super Nintendo ROM to start.");
+                }
+
+                var toolbar = new SDL.FRect
+                {
+                    X = 0,
+                    Y = outputHeight - ToolbarHeight,
+                    W = outputWidth,
+                    H = ToolbarHeight,
+                };
                 SDL.SetRenderDrawColor(renderer, 16, 20, 30, 255);
-                SDL.RenderFillRect(renderer, in gameArea);
+                SDL.RenderFillRect(renderer, in toolbar);
+                SDL.SetRenderDrawColor(renderer, 52, 86, 132, 255);
+                SDL.RenderFillRect(renderer, in openButton);
+                SDL.RenderFillRect(renderer, in settingsButton);
                 SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                SDL.RenderDebugText(renderer, 32, 40, "SMW2PC");
-                SDL.RenderDebugText(renderer, 32, 64, "Open a Super Nintendo ROM to start.");
+                SDL.RenderDebugText(renderer, openButton.X + 12, openButton.Y + 8, "Open ROM");
+                SDL.RenderDebugText(renderer, settingsButton.X + 8, settingsButton.Y + 8, "Settings · F2");
+                var visibleStatus = loadedRom is not null
+                    && cpuRunner is not null
+                    && statusMessage.StartsWith("Running", StringComparison.Ordinal)
+                    ? $"{loadedRom.Header.Title} · sim {loadedRom.Header.FrameRateHz:0.##} Hz · render {settings.RenderFrameRate} FPS"
+                    : statusMessage;
+                if (!string.IsNullOrEmpty(audioError)
+                    && loadedRom is not null
+                    && cpuRunner is not null
+                    && statusMessage.StartsWith("Running", StringComparison.Ordinal))
+                {
+                    visibleStatus += $" · {audioError}";
+                }
+
+                SDL.RenderDebugText(renderer, 256, outputHeight - 52, visibleStatus);
+                SDL.RenderDebugText(renderer, WindowMargin, outputHeight - 20,
+                    "Arrows move · Z jump · X run · Enter start · F1 open ROM");
+
+                if (settingsOpen)
+                {
+                    DrawSettingsPanel(renderer, settingsPanel, settings, loadedRom?.Header.FrameRateHz);
+                }
+
+                SDL.RenderPresent(renderer);
+
+                if (presentationTimestamp >= nextPresentationTimestamp)
+                {
+                    var elapsedIntervals = ((presentationTimestamp - nextPresentationTimestamp) / renderIntervalTicks) + 1;
+                    nextPresentationTimestamp += elapsedIntervals * renderIntervalTicks;
+                }
             }
 
-            SDL.SetRenderDrawColor(renderer, 52, 86, 132, 255);
-            SDL.RenderFillRect(renderer, in openButton);
-            SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
-            SDL.RenderDebugText(renderer, 28, 704, "Open ROM");
-            SDL.RenderDebugText(renderer, 144, 704, $"{statusMessage}   Arrows move · Z jump · X run · Enter start · F1 open");
+            var timestampAfterPresent = Stopwatch.GetTimestamp();
+            if (settingsSavePending && timestampAfterPresent - settingsSaveTimestamp >= SettingsSaveDelayTicks)
+            {
+                settings.Save();
+                settingsSavePending = false;
+            }
 
-            SDL.RenderPresent(renderer);
+            var timeUntilNextPresentation = nextPresentationTimestamp - timestampAfterPresent;
+            if (timeUntilNextPresentation > 0)
+            {
+                var delayNanoseconds = (ulong)(timeUntilNextPresentation * 1_000_000_000.0 / Stopwatch.Frequency);
+                SDL.DelayPrecise(delayNanoseconds);
+            }
         }
+
+        settings.Save();
 
         if (audioStream != IntPtr.Zero)
         {
@@ -275,6 +421,254 @@ internal static class Program
         SDL.DestroyWindow(window);
         SDL.Quit();
         return 0;
+    }
+
+    private static SDL.FRect GetGameArea(int outputWidth, int outputHeight, GameAspectRatio aspectRatio)
+    {
+        var availableX = (float)WindowMargin;
+        var availableY = (float)WindowMargin;
+        var availableWidth = Math.Max(1, outputWidth - (WindowMargin * 2));
+        var availableHeight = Math.Max(1, outputHeight - ToolbarHeight - (WindowMargin * 2));
+        if (aspectRatio == GameAspectRatio.Stretch)
+        {
+            return new SDL.FRect
+            {
+                X = availableX,
+                Y = availableY,
+                W = availableWidth,
+                H = availableHeight,
+            };
+        }
+
+        var targetAspect = aspectRatio switch
+        {
+            GameAspectRatio.OriginalPixels => (float)SnesVideoRenderer.Width / SnesVideoRenderer.Height,
+            GameAspectRatio.Widescreen => 16f / 9,
+            _ => 4f / 3,
+        };
+        var availableAspect = (float)availableWidth / availableHeight;
+        var destinationWidth = availableWidth;
+        var destinationHeight = availableHeight;
+        if (availableAspect > targetAspect)
+        {
+            destinationWidth = (int)(availableHeight * targetAspect);
+        }
+        else
+        {
+            destinationHeight = (int)(availableWidth / targetAspect);
+        }
+
+        return new SDL.FRect
+        {
+            X = availableX + ((availableWidth - destinationWidth) / 2f),
+            Y = availableY + ((availableHeight - destinationHeight) / 2f),
+            W = destinationWidth,
+            H = destinationHeight,
+        };
+    }
+
+    private static SDL.ScaleMode GetScaleMode(DesktopSettings settings)
+    {
+        return settings.SmoothScaling ? SDL.ScaleMode.Linear : SDL.ScaleMode.Nearest;
+    }
+
+    private static SDL.FRect GetSettingsPanel(int outputWidth)
+    {
+        return new SDL.FRect
+        {
+            X = Math.Max(WindowMargin, outputWidth - 336),
+            Y = 32,
+            W = 320,
+            H = 294,
+        };
+    }
+
+    private static bool HandleSettingsClick(
+        float mouseX,
+        float mouseY,
+        SDL.FRect panel,
+        DesktopSettings settings,
+        IntPtr window,
+        IntPtr gameTexture,
+        ref bool settingsOpen,
+        ref string statusMessage)
+    {
+        if (IsInside(mouseX, mouseY, GetPanelCloseButton(panel)))
+        {
+            settingsOpen = false;
+            return false;
+        }
+
+        if (IsInside(mouseX, mouseY, GetResolutionRow(panel)))
+        {
+            var currentPreset = Array.FindIndex(
+                ResolutionPresets,
+                preset => preset.Width == settings.WindowWidth && preset.Height == settings.WindowHeight);
+            var nextPreset = ResolutionPresets[(currentPreset + 1) % ResolutionPresets.Length];
+            if (!SDL.SetWindowSize(window, nextPreset.Width, nextPreset.Height))
+            {
+                statusMessage = $"Could not resize the window: {SDL.GetError()}";
+                return false;
+            }
+
+            settings.WindowWidth = nextPreset.Width;
+            settings.WindowHeight = nextPreset.Height;
+            return true;
+        }
+
+        if (IsInside(mouseX, mouseY, GetAspectRatioRow(panel)))
+        {
+            var aspectCount = Enum.GetValues<GameAspectRatio>().Length;
+            settings.AspectRatio = (GameAspectRatio)(((int)settings.AspectRatio + 1) % aspectCount);
+            return true;
+        }
+
+        if (IsInside(mouseX, mouseY, GetFrameRateDecreaseButton(panel)))
+        {
+            var updatedFrameRate = DesktopSettings.ClampRenderFrameRate(settings.RenderFrameRate - 5);
+            if (updatedFrameRate == settings.RenderFrameRate)
+            {
+                return false;
+            }
+
+            settings.RenderFrameRate = updatedFrameRate;
+            return true;
+        }
+
+        if (IsInside(mouseX, mouseY, GetFrameRateIncreaseButton(panel)))
+        {
+            var updatedFrameRate = DesktopSettings.ClampRenderFrameRate(settings.RenderFrameRate + 5);
+            if (updatedFrameRate == settings.RenderFrameRate)
+            {
+                return false;
+            }
+
+            settings.RenderFrameRate = updatedFrameRate;
+            return true;
+        }
+
+        if (IsInside(mouseX, mouseY, GetScalingRow(panel)))
+        {
+            var smoothScaling = !settings.SmoothScaling;
+            if (!SDL.SetTextureScaleMode(
+                    gameTexture,
+                    smoothScaling ? SDL.ScaleMode.Linear : SDL.ScaleMode.Nearest))
+            {
+                statusMessage = $"Could not change texture scaling: {SDL.GetError()}";
+                return false;
+            }
+
+            settings.SmoothScaling = smoothScaling;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void DrawSettingsPanel(
+        IntPtr renderer,
+        SDL.FRect panel,
+        DesktopSettings settings,
+        double? gameFrameRate)
+    {
+        SDL.SetRenderDrawColor(renderer, 28, 34, 48, 255);
+        SDL.RenderFillRect(renderer, in panel);
+        SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        SDL.RenderDebugText(renderer, panel.X + 16, panel.Y + 16, "Display settings");
+
+        var resolutionRow = GetResolutionRow(panel);
+        DrawSettingsRow(renderer, resolutionRow, $"Window: {settings.WindowWidth} x {settings.WindowHeight}");
+        var aspectRow = GetAspectRatioRow(panel);
+        DrawSettingsRow(renderer, aspectRow, $"Aspect ratio: {GetAspectRatioName(settings.AspectRatio)}");
+
+        SDL.RenderDebugText(renderer, panel.X + 16, panel.Y + 145, $"Render cap: {settings.RenderFrameRate} FPS");
+        DrawSettingsButton(renderer, GetFrameRateDecreaseButton(panel), "-");
+        DrawSettingsButton(renderer, GetFrameRateIncreaseButton(panel), "+");
+
+        var scalingRow = GetScalingRow(panel);
+        DrawSettingsRow(renderer, scalingRow, $"Smooth scaling: {(settings.SmoothScaling ? "On" : "Off")}");
+        var gameTimingText = gameFrameRate is null
+            ? "Game timing: ROM region (50 or 60 Hz)"
+            : $"Game timing: fixed at {gameFrameRate:0.##} Hz";
+        SDL.RenderDebugText(renderer, panel.X + 16, panel.Y + 224, gameTimingText);
+        SDL.RenderDebugText(renderer, panel.X + 16, panel.Y + 240, "Display settings do not change game speed.");
+        DrawSettingsButton(renderer, GetPanelCloseButton(panel), "Close");
+    }
+
+    private static void DrawSettingsRow(IntPtr renderer, SDL.FRect row, string text)
+    {
+        SDL.SetRenderDrawColor(renderer, 42, 50, 68, 255);
+        SDL.RenderFillRect(renderer, in row);
+        SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        SDL.RenderDebugText(renderer, row.X + 10, row.Y + 12, text);
+        SDL.RenderDebugText(renderer, row.X + row.W - 20, row.Y + 12, ">");
+    }
+
+    private static void DrawSettingsButton(IntPtr renderer, SDL.FRect button, string text)
+    {
+        SDL.SetRenderDrawColor(renderer, 52, 86, 132, 255);
+        SDL.RenderFillRect(renderer, in button);
+        SDL.SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        SDL.RenderDebugText(renderer, button.X + (button.W / 2) - (text.Length * 4), button.Y + 8, text);
+    }
+
+    private static SDL.FRect GetResolutionRow(SDL.FRect panel) => new()
+    {
+        X = panel.X + 12,
+        Y = panel.Y + 44,
+        W = panel.W - 24,
+        H = 36,
+    };
+
+    private static SDL.FRect GetAspectRatioRow(SDL.FRect panel) => new()
+    {
+        X = panel.X + 12,
+        Y = panel.Y + 86,
+        W = panel.W - 24,
+        H = 36,
+    };
+
+    private static SDL.FRect GetFrameRateDecreaseButton(SDL.FRect panel) => new()
+    {
+        X = panel.X + panel.W - 92,
+        Y = panel.Y + 132,
+        W = 36,
+        H = 28,
+    };
+
+    private static SDL.FRect GetFrameRateIncreaseButton(SDL.FRect panel) => new()
+    {
+        X = panel.X + panel.W - 48,
+        Y = panel.Y + 132,
+        W = 36,
+        H = 28,
+    };
+
+    private static SDL.FRect GetScalingRow(SDL.FRect panel) => new()
+    {
+        X = panel.X + 12,
+        Y = panel.Y + 172,
+        W = panel.W - 24,
+        H = 36,
+    };
+
+    private static SDL.FRect GetPanelCloseButton(SDL.FRect panel) => new()
+    {
+        X = panel.X + 12,
+        Y = panel.Y + 254,
+        W = panel.W - 24,
+        H = 30,
+    };
+
+    private static string GetAspectRatioName(GameAspectRatio aspectRatio)
+    {
+        return aspectRatio switch
+        {
+            GameAspectRatio.OriginalPixels => "Original pixels (8:7)",
+            GameAspectRatio.Widescreen => "Widescreen (16:9)",
+            GameAspectRatio.Stretch => "Stretch to window",
+            _ => "Television (4:3)",
+        };
     }
 
     private static void OnRomFileDialogCompleted(IntPtr userdata, IntPtr fileList, int filter)
