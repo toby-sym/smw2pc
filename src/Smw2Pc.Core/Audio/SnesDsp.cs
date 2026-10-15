@@ -127,7 +127,7 @@ internal sealed class SnesDsp
             }
 
             var sample = (registers[0x3D] & bit) != 0
-                ? SignExtend15(noiseLfsr << 1)
+                ? unchecked((short)(noiseLfsr << 1))
                 : Interpolate(voice);
             AdvanceEnvelope(voice, baseAddress);
             sample = (sample * voice.Envelope) >> 11;
@@ -347,12 +347,6 @@ internal sealed class SnesDsp
 
     private static int Clamp16(int value) => Math.Clamp(value, short.MinValue, short.MaxValue);
 
-    private static int SignExtend15(int value)
-    {
-        value &= 0x7FFF;
-        return (value & 0x4000) != 0 ? value - 0x8000 : value;
-    }
-
     private sealed class Voice
     {
         public readonly int[] DecodedSamples = new int[BrrSamplesPerBlock];
@@ -421,12 +415,20 @@ internal sealed class SnesDsp
 
                 sample = filter switch
                 {
-                    1 => sample + FilterHistoryOne - (FilterHistoryOne >> 4),
-                    2 => sample + ((FilterHistoryOne * 61) >> 5) - ((FilterHistoryTwo * 15) >> 4),
-                    3 => sample + ((FilterHistoryOne * 115) >> 6) - ((FilterHistoryTwo * 13) >> 4),
+                    1 => sample + (FilterHistoryOne >> 1) + ((-FilterHistoryOne) >> 5),
+                    2 => sample
+                        + FilterHistoryOne
+                        - FilterHistoryTwo
+                        + (FilterHistoryTwo >> 4)
+                        + ((FilterHistoryOne * -3) >> 6),
+                    3 => sample
+                        + FilterHistoryOne
+                        - FilterHistoryTwo
+                        + ((FilterHistoryOne * -13) >> 7)
+                        + ((FilterHistoryTwo * 3) >> 4),
                     _ => sample,
                 };
-                sample = SignExtend15(Clamp16(sample) * 2);
+                sample = unchecked((short)(Clamp16(sample) * 2));
                 FilterHistoryTwo = FilterHistoryOne >> 1;
                 FilterHistoryOne = sample;
                 DecodedSamples[sampleIndex] = sample;
