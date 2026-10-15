@@ -129,7 +129,10 @@ internal static class Program
                     cpuRunner = new NativeCpuRunner(memoryBus);
                     memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
                     frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
-                    statusMessage = $"Running {loadedRom.Header.Title}";
+                    previousTimestamp = Stopwatch.GetTimestamp();
+                    elapsedSeconds = 0;
+                    var regionName = loadedRom.Header.IsPalRegion ? "PAL" : "NTSC";
+                    statusMessage = $"Running {loadedRom.Header.Title} at {loadedRom.Header.FrameRateHz:0.##} Hz ({regionName})";
                 }
                 catch (Exception exception) when (
                     exception is IOException

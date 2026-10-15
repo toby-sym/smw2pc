@@ -199,7 +199,7 @@ public sealed record SnesRomHeader(
     ushort Checksum,
     bool HasValidChecksumPair)
 {
-    public bool IsPalRegion => CountryCode > 1;
+    public bool IsPalRegion => CountryCode is >= 0x02 and <= 0x0C or 0x11;
 
     public double FrameRateHz => IsPalRegion ? 50.00697 : 60.0988;
 
