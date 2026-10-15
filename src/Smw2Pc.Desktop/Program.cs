@@ -215,13 +215,14 @@ internal static class Program
                         }
                     }
 
-                    if (advancedFrames > 0)
+                    var interpolationProgress = (float)(frameAccumulator / frameDuration);
+                    SnesVideoRenderer.RenderFrame(
+                        cpuRunner.MemoryBus.Hardware,
+                        frameBuffer,
+                        interpolationProgress);
+                    if (!SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, SnesVideoRenderer.Width * SnesVideoRenderer.BytesPerPixel))
                     {
-                        SnesVideoRenderer.RenderFrame(cpuRunner.MemoryBus.Hardware, frameBuffer);
-                        if (!SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, SnesVideoRenderer.Width * SnesVideoRenderer.BytesPerPixel))
-                        {
-                            statusMessage = $"Could not update the game frame: {SDL.GetError()}";
-                        }
+                        statusMessage = $"Could not update the game frame: {SDL.GetError()}";
                     }
                 }
                 catch (Exception exception) when (exception is NotSupportedException or InvalidOperationException)
