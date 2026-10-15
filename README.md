@@ -17,9 +17,14 @@ The core has an early native translation path for LoROM cartridges. It
 translates decoded 65C816 instruction blocks into .NET IL, which the .NET JIT
 compiles for the host CPU. The current instruction subset includes common loads,
 stores, arithmetic and logic, comparisons, branches, register transfers, stack
-operations, and status mode changes. The translator does not yet implement the
-full 65C816 instruction set or SNES hardware, so it cannot boot Super Mario
-World yet.
+operations, and status mode changes. Many 65C816 opcodes and substantial SNES
+hardware behavior are still unimplemented, so it cannot boot Super Mario World
+yet.
+
+The hardware bus foundation routes PPU register access and VRAM transfers, APU
+ports, the WRAM data port, and controller input. It does not render video,
+generate audio, transfer DMA, or model SNES timing and interrupts. The game is
+not playable yet.
 
 Run the core tests with:
 
