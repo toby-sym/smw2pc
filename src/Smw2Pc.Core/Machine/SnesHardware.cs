@@ -30,6 +30,9 @@ public sealed class SnesHardware
     private ushort objectAttributeWordAddress;
     private byte colorRamAddress;
     private byte colorRamLowByte;
+    private byte fixedRed;
+    private byte fixedGreen;
+    private byte fixedBlue;
     private bool colorRamHighByte;
     private bool objectAttributeHighByte;
     private bool backgroundScrollHighByte;
@@ -51,6 +54,8 @@ public sealed class SnesHardware
     public ReadOnlyMemory<byte> ObjectAttributeMemory => objectAttributeMemory;
 
     public ReadOnlyMemory<byte> PpuRegisters => ppuRegisters;
+
+    public ushort FixedColor => (ushort)(fixedRed | (fixedGreen << 5) | (fixedBlue << 10));
 
     public ushort GetBackgroundHorizontalOffset(int background)
     {
@@ -407,6 +412,23 @@ public sealed class SnesHardware
                 colorRam[colorRamByteAddress + 1] = (byte)(value & 0x7F);
                 colorRamHighByte = false;
                 colorRamAddress++;
+                break;
+            case 0x2132:
+                if ((value & 0x20) != 0)
+                {
+                    fixedRed = (byte)(value & 0x1F);
+                }
+
+                if ((value & 0x40) != 0)
+                {
+                    fixedGreen = (byte)(value & 0x1F);
+                }
+
+                if ((value & 0x80) != 0)
+                {
+                    fixedBlue = (byte)(value & 0x1F);
+                }
+
                 break;
         }
     }
