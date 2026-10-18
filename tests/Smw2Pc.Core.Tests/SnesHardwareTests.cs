@@ -108,6 +108,19 @@ public sealed class SnesHardwareTests
             memoryBus.WriteByte(0x002119, 0);
         }
 
+        SetVideoRamAddress(memoryBus, 0x10);
+        for (var row = 0; row < 8; row++)
+        {
+            memoryBus.WriteByte(0x002118, 0xFF);
+            memoryBus.WriteByte(0x002119, 0);
+        }
+
+        for (var row = 0; row < 8; row++)
+        {
+            memoryBus.WriteByte(0x002118, 0);
+            memoryBus.WriteByte(0x002119, 0);
+        }
+
         SetObjectZero(memoryBus, x: 20, y: 20);
         runner.Run(18_000);
         SetObjectZero(memoryBus, x: 29, y: 20);
@@ -134,15 +147,25 @@ public sealed class SnesHardwareTests
         var reverseSolidPixel = ((20 * SnesVideoRenderer.Width) + 27) * SnesVideoRenderer.BytesPerPixel;
         Assert.IsInRange((byte)56, (byte)72, pixels[reverseHalfwayPixel]);
         Assert.AreEqual(byte.MaxValue, pixels[reverseSolidPixel]);
+
+        SetObjectZero(memoryBus, x: 29, y: 20, tile: 1);
+        runner.Run(18_000);
+        SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.5f);
+
+        var backgroundPixel = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
+        var clearPixel = ((20 * SnesVideoRenderer.Width) + 100) * SnesVideoRenderer.BytesPerPixel;
+        var currentObjectPixel = ((20 * SnesVideoRenderer.Width) + 31) * SnesVideoRenderer.BytesPerPixel;
+        CollectionAssert.AreEqual(pixels.AsSpan(clearPixel, 3).ToArray(), pixels.AsSpan(backgroundPixel, 3).ToArray());
+        Assert.AreEqual(byte.MaxValue, pixels[currentObjectPixel]);
     }
 
-    private static void SetObjectZero(SnesMemoryBus memoryBus, byte x, byte y)
+    private static void SetObjectZero(SnesMemoryBus memoryBus, byte x, byte y, byte tile = 0)
     {
         memoryBus.WriteByte(0x002102, 0);
         memoryBus.WriteByte(0x002103, 0);
         memoryBus.WriteByte(0x002104, x);
         memoryBus.WriteByte(0x002104, y);
-        memoryBus.WriteByte(0x002104, 0);
+        memoryBus.WriteByte(0x002104, tile);
         memoryBus.WriteByte(0x002104, 0);
     }
 

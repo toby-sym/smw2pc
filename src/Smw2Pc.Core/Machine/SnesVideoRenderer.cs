@@ -832,28 +832,36 @@ public static class SnesVideoRenderer
             if (hasPreviousObjectFrame && interpolationProgress < 1f)
             {
                 var previousHighBits = (previousObjectRam[512 + (objectIndex / 4)] >> ((objectIndex & 3) * 2)) & 0x03;
-                var previousXRaw = previousObjectRam[objectAddress] | ((previousHighBits & 1) << 8);
-                var previousX = previousXRaw >= 256 ? previousXRaw - 512 : previousXRaw;
-                var xDelta = x - previousX;
-                if (Math.Abs(xDelta) <= MaximumInterpolatedObjectDelta)
+                var previousTile = previousObjectRam[objectAddress + 2];
+                var previousAttributes = previousObjectRam[objectAddress + 3];
+                var sameObject = previousTile == tile
+                    && ((previousAttributes ^ attributes) & 0x3F) == 0
+                    && ((previousHighBits ^ currentHighBits) & 0x02) == 0;
+                if (sameObject)
                 {
-                    x = previousX + (xDelta * interpolationProgress);
-                }
+                    var previousXRaw = previousObjectRam[objectAddress] | ((previousHighBits & 1) << 8);
+                    var previousX = previousXRaw >= 256 ? previousXRaw - 512 : previousXRaw;
+                    var xDelta = x - previousX;
+                    if (Math.Abs(xDelta) <= MaximumInterpolatedObjectDelta)
+                    {
+                        x = previousX + (xDelta * interpolationProgress);
+                    }
 
-                var previousY = previousObjectRam[objectAddress + 1];
-                var yDelta = (int)y - previousY;
-                if (yDelta > 128)
-                {
-                    yDelta -= 256;
-                }
-                else if (yDelta < -128)
-                {
-                    yDelta += 256;
-                }
+                    var previousY = previousObjectRam[objectAddress + 1];
+                    var yDelta = (int)y - previousY;
+                    if (yDelta > 128)
+                    {
+                        yDelta -= 256;
+                    }
+                    else if (yDelta < -128)
+                    {
+                        yDelta += 256;
+                    }
 
-                if (Math.Abs(yDelta) <= MaximumInterpolatedObjectDelta)
-                {
-                    y = previousY + (yDelta * interpolationProgress);
+                    if (Math.Abs(yDelta) <= MaximumInterpolatedObjectDelta)
+                    {
+                        y = previousY + (yDelta * interpolationProgress);
+                    }
                 }
             }
 

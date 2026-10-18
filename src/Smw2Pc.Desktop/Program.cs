@@ -116,7 +116,7 @@ internal static class Program
             renderer,
             BundledAssets.GetFontPath());
 
-        SDL.SetTextureScaleMode(gameTexture, GetScaleMode(settings));
+        SDL.SetTextureScaleMode(gameTexture, SDL.ScaleMode.Nearest);
         var verticalSyncEnabled = SDL.SetRenderVSync(renderer, 1);
         if (!verticalSyncEnabled)
         {
@@ -254,7 +254,6 @@ internal static class Program
                         ref settingsTab,
                         settings,
                         window,
-                        gameTexture,
                         ref rebindingAction,
                         ref settingsOpen,
                         ref statusMessage))
@@ -640,11 +639,6 @@ internal static class Program
         };
     }
 
-    private static SDL.ScaleMode GetScaleMode(DesktopSettings settings)
-    {
-        return settings.SmoothScaling ? SDL.ScaleMode.Linear : SDL.ScaleMode.Nearest;
-    }
-
     private static SDL.FRect GetSettingsButton(int outputWidth) => new()
     {
         X = outputWidth - 60,
@@ -726,7 +720,6 @@ internal static class Program
         ref SettingsTab settingsTab,
         DesktopSettings settings,
         IntPtr window,
-        IntPtr gameTexture,
         ref GameAction? rebindingAction,
         ref bool settingsOpen,
         ref string statusMessage)
@@ -821,21 +814,6 @@ internal static class Program
             return true;
         }
 
-        if (IsInside(mouseX, mouseY, GetScalingRow(panel)))
-        {
-            var smoothScaling = !settings.SmoothScaling;
-            if (!SDL.SetTextureScaleMode(
-                    gameTexture,
-                    smoothScaling ? SDL.ScaleMode.Linear : SDL.ScaleMode.Nearest))
-            {
-                statusMessage = $"Could not change texture scaling: {SDL.GetError()}";
-                return false;
-            }
-
-            settings.SmoothScaling = smoothScaling;
-            return true;
-        }
-
         return false;
     }
 
@@ -866,7 +844,8 @@ internal static class Program
         {
             DrawSettingsRow(renderer, textRenderer, GetResolutionRow(panel), $"Window size: {settings.WindowWidth} x {settings.WindowHeight}");
             DrawSettingsRow(renderer, textRenderer, GetAspectRatioRow(panel), $"Aspect ratio: {GetAspectRatioName(settings.AspectRatio)}");
-            DrawSettingsRow(renderer, textRenderer, GetScalingRow(panel), $"Smooth filtering: {(settings.SmoothScaling ? "On" : "Off")}");
+            DrawText(renderer, textRenderer, "Pixel scaling: Sharp (nearest-neighbor)",
+                panel.X + 20, panel.Y + 194, 13, MakeUiColor(181, 194, 211));
 
             DrawText(renderer, textRenderer, $"Presentation cap: {settings.RenderFrameRate} FPS",
                 panel.X + 20, panel.Y + 242, 14, MakeUiColor(248, 250, 255));
@@ -1036,14 +1015,6 @@ internal static class Program
         Y = panel.Y + 230,
         W = 36,
         H = 30,
-    };
-
-    private static SDL.FRect GetScalingRow(SDL.FRect panel) => new()
-    {
-        X = panel.X + 12,
-        Y = panel.Y + 184,
-        W = panel.W - 24,
-        H = 34,
     };
 
     private static SDL.FRect GetBindingRow(SDL.FRect panel, int index) => new()
