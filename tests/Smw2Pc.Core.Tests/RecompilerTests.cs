@@ -108,16 +108,22 @@ public sealed class RecompilerTests
         var discovery = new CodeDiscovery(rom);
         discovery.Analyze();
 
-        Assert.IsTrue(discovery.Blocks.Any(block => block.StartAddress == 0x0DA68E));
+        Assert.IsTrue(discovery.Blocks.Any(block => block.StartAddress == 0x0DA68E
+            && block.StatusMode == 0x30 && !block.EmulationMode));
+        Assert.IsTrue(discovery.Blocks.Any(block => block.StartAddress == 0x0DA68E
+            && block.StatusMode == 0x30 && block.EmulationMode));
         Assert.Contains("$0DA13F: 240 contiguous 3-byte ROM pointers", discovery.InferredPointerTables);
 
         var blocks = discovery.Blocks;
         var assembly = Compile(new OperationLowerer().EmitCpuMethods(blocks), RomEmitter.EmitMain(rom, blocks));
         var execute = assembly.GetType("Smw2Pc.Core.Cpu.CompiledRomProgram")!
             .GetMethod("Execute", BindingFlags.Public | BindingFlags.Static)!;
-        var state = new CpuState { ProgramBank = 0x0D, ProgramCounter = 0xA68E, Status = 0x30, EmulationMode = true };
-        Assert.AreEqual(1, execute.Invoke(null, [state, new SnesMemoryBus(rom), 1]));
-        Assert.IsTrue(state.Halted);
+        foreach (var emulation in new[] { false, true })
+        {
+            var state = new CpuState { ProgramBank = 0x0D, ProgramCounter = 0xA68E, Status = 0x30, EmulationMode = emulation };
+            Assert.AreEqual(1, execute.Invoke(null, [state, new SnesMemoryBus(rom), 1]));
+            Assert.IsTrue(state.Halted);
+        }
     }
 
     [TestMethod]

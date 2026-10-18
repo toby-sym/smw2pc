@@ -44,7 +44,7 @@ internal sealed class CodeDiscovery(SnesRom rom)
             else AllModes(target, includeEmulation: false);
         }
         foreach (var table in dispatchers.StaticPointerTables)
-            ExpandTable(table.Address, table.Width, 0x30, emulation: true, table.EntryCount);
+            ExpandTable(table.Address, table.Width, 0x30, emulation: true, table.EntryCount, allModes: true);
 
         while (pending.TryDequeue(out var key))
         {
@@ -147,7 +147,7 @@ internal sealed class CodeDiscovery(SnesRom rom)
         }
     }
 
-    private int ExpandTable(uint table, int width, byte mode, bool emulation, int maximumEntries = 256)
+    private int ExpandTable(uint table, int width, byte mode, bool emulation, int maximumEntries = 256, bool allModes = false)
     {
         if (!bus.IsCartridgeRomAddress(table)) return 0;
         var bank = table & 0xFF0000;
@@ -163,7 +163,8 @@ internal sealed class CodeDiscovery(SnesRom rom)
             target |= width == 3 ? (uint)bus.PeekCodeByte(entry + 2) << 16 : bank;
             if (!bus.IsCartridgeRomAddress(target) || target == 0xFFFFFF || target >= table && target < entry + width) break;
             if (target > table && (target & 0xFF0000) == bank) boundary = Math.Min(boundary, target);
-            Enqueue(target, mode, emulation);
+            if (allModes) AllModes(target);
+            else Enqueue(target, mode, emulation);
             count++;
         }
         if (count != 0) InferredPointerTables.Add($"${table:X6}: {count} contiguous {width}-byte ROM pointers");
