@@ -17,8 +17,11 @@ internal sealed class CodeDiscovery(SnesRom rom)
 
     public void AddObserved(DecodedCpuBlock block)
     {
-        block = block with { StartAddress = bus.CanonicalCodeAddress(block.StartAddress),
-            StatusMode = block.EmulationMode ? (byte)0x30 : block.StatusMode };
+        block = block with
+        {
+            StartAddress = bus.CanonicalCodeAddress(block.StartAddress),
+            StatusMode = block.EmulationMode ? (byte)0x30 : block.StatusMode
+        };
         var isRom = bus.IsCartridgeRomAddress(block.StartAddress);
         var key = $"{block.StartAddress:X6}:{block.StatusMode:X2}:{block.EmulationMode}"
             + (isRom ? "" : ":" + Convert.ToHexString(block.SourceBytes));
@@ -48,8 +51,10 @@ internal sealed class CodeDiscovery(SnesRom rom)
             {
                 block = NativeBlockTranslator.Decode(bus, new CpuState
                 {
-                    ProgramBank = (byte)(key.Address >> 16), ProgramCounter = (ushort)key.Address,
-                    Status = key.Mode, EmulationMode = key.Emulation,
+                    ProgramBank = (byte)(key.Address >> 16),
+                    ProgramCounter = (ushort)key.Address,
+                    Status = key.Mode,
+                    EmulationMode = key.Emulation,
                 });
             }
             catch (NotSupportedException)

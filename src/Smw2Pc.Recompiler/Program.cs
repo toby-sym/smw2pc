@@ -45,9 +45,16 @@ try
     File.WriteAllText(Path.Combine(directory, "proof.json"), JsonSerializer.Serialize(new ProofDocument(rom.Sha256, proofs), json));
     File.WriteAllText(Path.Combine(directory, "manifest.json"), JsonSerializer.Serialize(new
     {
-        FormatVersion = 1, rom.Header.Title, rom.Sha256, FramesPerProfile = frames, Profiles = profiles,
-        MainCpuBlocks = blocks.Count, WritableCodeVariants = blocks.Count(b => (b.StartAddress >> 16) is 0x7E or 0x7F),
-        AudioEntries = recorder.AudioEntries.Count, RuntimeCompilerIncluded = false, InterpreterFallbackIncluded = false,
+        FormatVersion = 1,
+        rom.Header.Title,
+        rom.Sha256,
+        FramesPerProfile = frames,
+        Profiles = profiles,
+        MainCpuBlocks = blocks.Count,
+        WritableCodeVariants = blocks.Count(b => (b.StartAddress >> 16) is 0x7E or 0x7F),
+        AudioEntries = recorder.AudioEntries.Count,
+        RuntimeCompilerIncluded = false,
+        InterpreterFallbackIncluded = false,
         UnresolvedStaticTransfers = discovery.UnresolvedTransfers.Order().ToArray(),
         CoverageNote = "Static closure plus recorded execution paths. Strict player rejects uncompiled code; this is not a whole-game coverage guarantee.",
     }, json));
