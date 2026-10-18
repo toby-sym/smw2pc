@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Reflection;
 using Smw2Pc.Core.Cpu;
 using Smw2Pc.Core.Machine;
 using Smw2Pc.Core.Recompilation;
@@ -16,6 +17,19 @@ internal static class HeadlessProof
             var verify = args.Contains("--verify");
             if (verify && !NativeCpuRunner.IsRecompiled)
                 throw new InvalidOperationException("Differential verification requires a strict recompiled player.");
+            var engine = typeof(NativeCpuRunner).Assembly;
+            var runtimeAudit = new
+            {
+                HasRuntimeTranslator = engine.GetType("Smw2Pc.Core.Cpu.NativeBlockTranslator") is not null,
+                HasCpuInstructionDispatcher = engine.GetType("Smw2Pc.Core.Cpu.CpuInstructionExecutor")!
+                    .GetMethod("Execute", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic) is not null,
+                HasAudioOpcodeState = engine.GetType("Smw2Pc.Core.Audio.Spc700Cpu")!
+                    .GetField("opcode", BindingFlags.Instance | BindingFlags.NonPublic) is not null,
+                ReferencesReflectionEmit = engine.GetReferencedAssemblies().Any(a => a.Name?.StartsWith("System.Reflection.Emit", StringComparison.Ordinal) == true),
+            };
+            if (verify && (runtimeAudit.HasRuntimeTranslator || runtimeAudit.HasCpuInstructionDispatcher
+                || runtimeAudit.HasAudioOpcodeState || runtimeAudit.ReferencesReflectionEmit))
+                throw new InvalidOperationException("Compiled-player audit found a runtime compiler or CPU dispatcher.");
             var frames = 2400;
             var profileName = "play";
             string? report = null;
@@ -97,6 +111,7 @@ internal static class HeadlessProof
                 rom.Sha256,
                 Recompiled = NativeCpuRunner.IsRecompiled,
                 Verified = verify,
+                RuntimeAudit = runtimeAudit,
                 RuntimeCompilerFallbacks = NativeCpuRunner.IsRecompiled ? 0 : (int?)null,
                 ElapsedSeconds = watch.Elapsed.TotalSeconds,
                 Profiles = outcomes

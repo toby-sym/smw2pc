@@ -28,6 +28,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Smw2Pc.Core\Smw2Pc.Core.csproj" />
+    <EmbeddedResource Include="..\..\assets\fonts\Inter-Variable.ttf" LogicalName="Smw2Pc.Desktop.Font" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(CompiledRomPath)' != ''">

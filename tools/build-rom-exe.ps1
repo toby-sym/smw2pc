@@ -66,6 +66,10 @@ Copy-Item -LiteralPath (Join-Path $generatedDirectory "proof.json") -Destination
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "THIRD-PARTY-NOTICES.md") -Destination $outputPath
 
 if (-not $SkipVerification) {
+    & $executablePath --verify-native
+    if ($LASTEXITCODE -ne 0) {
+        throw "The portable player's bundled native dependencies failed verification."
+    }
     & $executablePath --verify --report (Join-Path $outputPath "verification.json")
     if ($LASTEXITCODE -ne 0) {
         throw "The compiled player failed its differential proof. See the error above; the artifact is not verified."

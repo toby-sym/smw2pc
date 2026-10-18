@@ -66,6 +66,7 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        if (args.Contains("--verify-native")) return NativeDependencyProof.Run();
         if (args.Contains("--verify") || args.Contains("--headless"))
             return HeadlessProof.Run(args);
         var settings = DesktopSettings.Load();
@@ -107,7 +108,7 @@ internal static class Program
 
         var textRenderer = UiTextRenderer.TryCreate(
             renderer,
-            Path.Combine(AppContext.BaseDirectory, "assets", "fonts", "Inter-Variable.ttf"));
+            BundledAssets.GetFontPath());
 
         SDL.SetTextureScaleMode(gameTexture, GetScaleMode(settings));
         var verticalSyncEnabled = SDL.SetRenderVSync(renderer, 1);
