@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using Smw2Pc.Core.Cpu;
 using Smw2Pc.Core.Machine;
 using Smw2Pc.Core.Recompilation;
@@ -12,6 +14,8 @@ internal static class HeadlessProof
         try
         {
             var verify = args.Contains("--verify");
+            if (verify && !NativeCpuRunner.IsRecompiled)
+                throw new InvalidOperationException("Differential verification requires a strict recompiled player.");
             var frames = 2400;
             var profileName = "play";
             string? report = null;
@@ -58,22 +62,24 @@ internal static class HeadlessProof
                 var bus = new SnesMemoryBus(rom);
                 var runner = new NativeCpuRunner(bus);
                 var checkpoints = profile.Checkpoints.ToDictionary(c => c.Frame);
+                using var audioHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                 ProofCheckpoint? final = null;
                 for (var frame = 0; frame < profile.Frames; frame++)
                 {
                     bus.Hardware.SetControllerButtons(0, ProofPlayback.Buttons(profile.Name, frame, bus));
                     runner.Run(18_000);
-                    bus.Hardware.Apu.DrainSamples();
+                    var samples = bus.Hardware.Apu.DrainSamples();
+                    audioHash.AppendData(MemoryMarshal.AsBytes(samples.AsSpan()));
                     if (checkpoints.TryGetValue(frame + 1, out var expected))
                     {
-                        var actual = ProofPlayback.Capture(runner, frame + 1);
-                        if (actual.StateSha256 != expected.StateSha256)
+                        var actual = ProofPlayback.Capture(runner, frame + 1, Convert.ToHexString(audioHash.GetCurrentHash()));
+                        if (actual.StateSha256 != expected.StateSha256 || actual.AudioSha256 != expected.AudioSha256)
                             throw new InvalidDataException($"Differential mismatch in {profile.Name}, frame {frame + 1}, CPU ${runner.State.ProgramBank:X2}{runner.State.ProgramCounter:X4}. Expected {expected.StateSha256}, actual {actual.StateSha256}.");
                         final = actual;
                     }
                     if (runner.State.Halted) throw new InvalidOperationException($"CPU halted at frame {frame + 1}.");
                 }
-                final ??= ProofPlayback.Capture(runner, profile.Frames);
+                final ??= ProofPlayback.Capture(runner, profile.Frames, Convert.ToHexString(audioHash.GetCurrentHash()));
                 if (screenshot is not null) WriteBitmap(screenshot, bus.Hardware);
                 Console.WriteLine($"{profile.Name}: {profile.Frames} frames, {checkpoints.Count} matching checkpoints, game mode ${final.GameMode:X2}, {runner.CompiledInstructionsExecuted:N0} compiled main instructions, {bus.Hardware.Apu.TranslatedInstructionsExecuted:N0} compiled audio instructions.");
                 outcomes.Add(new { profile.Name, profile.Frames, MatchingCheckpoints = checkpoints.Count,
@@ -82,7 +88,8 @@ internal static class HeadlessProof
                     Final = final });
             }
             var json = JsonSerializer.Serialize(new { rom.Sha256, Recompiled = NativeCpuRunner.IsRecompiled,
-                Verified = verify, RuntimeCompilerFallbacks = 0, ElapsedSeconds = watch.Elapsed.TotalSeconds, Profiles = outcomes },
+                Verified = verify, RuntimeCompilerFallbacks = NativeCpuRunner.IsRecompiled ? 0 : (int?)null,
+                ElapsedSeconds = watch.Elapsed.TotalSeconds, Profiles = outcomes },
                 new JsonSerializerOptions { WriteIndented = true });
             if (report is not null)
             {

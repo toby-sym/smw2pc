@@ -14,7 +14,7 @@ internal static class RomEmitter
         var lowerer = new OperationLowerer();
         File.WriteAllText(Path.Combine(directory, "CompiledCpuOperations.g.cs"), lowerer.EmitCpuMethods(blocks));
         File.WriteAllText(Path.Combine(directory, "CompiledRomProgram.g.cs"), EmitMain(rom, blocks));
-        File.WriteAllText(Path.Combine(directory, "CompiledAudioOperations.g.cs"), lowerer.EmitAudioMethods(audioEntries.Select(e => e.Opcode)));
+        File.WriteAllText(Path.Combine(directory, "CompiledAudioOperations.g.cs"), lowerer.EmitAudioMethods(Enumerable.Range(0, 256).Select(i => (byte)i)));
         File.WriteAllText(Path.Combine(directory, "CompiledAudioProgram.g.cs"), EmitAudio(audioEntries));
     }
 

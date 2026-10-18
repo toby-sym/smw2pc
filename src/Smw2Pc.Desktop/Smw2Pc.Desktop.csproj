@@ -39,4 +39,8 @@
     <EmbeddedResource Include="$(RecompiledSourceDirectory)\manifest.json" LogicalName="Smw2Pc.Desktop.RecompilationManifest" />
   </ItemGroup>
 
+  <PropertyGroup Condition="'$(RecompiledSourceDirectory)' != ''">
+    <AssemblyName>SMW2PC.Recompiled</AssemblyName>
+  </PropertyGroup>
+
 </Project>

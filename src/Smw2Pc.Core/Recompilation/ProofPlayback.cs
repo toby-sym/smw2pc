@@ -4,7 +4,7 @@ using Smw2Pc.Core.Machine;
 
 namespace Smw2Pc.Core.Recompilation;
 
-public sealed record ProofCheckpoint(int Frame, string StateSha256, int GameMode, int Level);
+public sealed record ProofCheckpoint(int Frame, string StateSha256, int GameMode, int Level, string AudioSha256 = "");
 public sealed record ProofProfile(string Name, int Frames, List<ProofCheckpoint> Checkpoints);
 public sealed record ProofDocument(string RomSha256, List<ProofProfile> Profiles);
 
@@ -30,7 +30,7 @@ public static class ProofPlayback
             | (frame % 60 < 25 ? SnesControllerButtons.B : SnesControllerButtons.None);
     }
 
-    public static ProofCheckpoint Capture(NativeCpuRunner runner, int frame)
+    public static ProofCheckpoint Capture(NativeCpuRunner runner, int frame, string audioSha256 = "")
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         using var buffer = new MemoryStream();
@@ -52,6 +52,6 @@ public static class ProofPlayback
         hash.AppendData(hardware.Apu.AudioRam.Span);
         hash.AppendData(hardware.Apu.GetExecutionState());
         return new ProofCheckpoint(frame, Convert.ToHexString(hash.GetHashAndReset()),
-            hardware.ReadWorkRam(0x100), hardware.ReadWorkRam(0x13BF));
+            hardware.ReadWorkRam(0x100), hardware.ReadWorkRam(0x13BF), audioSha256);
     }
 }
