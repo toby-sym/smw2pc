@@ -10,3 +10,7 @@ artifacts/
 
 ## macOS
 .DS_Store
+
+## ROM files
+*.sfc
+*.smc
