@@ -117,7 +117,11 @@ internal static class Program
             BundledAssets.GetFontPath());
 
         SDL.SetTextureScaleMode(gameTexture, SDL.ScaleMode.Nearest);
-        var verticalSyncEnabled = SDL.SetRenderVSync(renderer, 1);
+        var verticalSyncEnabled = SDL.SetRenderVSync(renderer, SDL.RendererVSyncAdaptive);
+        if (!verticalSyncEnabled)
+        {
+            verticalSyncEnabled = SDL.SetRenderVSync(renderer, 1);
+        }
         if (!verticalSyncEnabled)
         {
             SDL.SetRenderVSync(renderer, 0);
@@ -368,6 +372,10 @@ internal static class Program
                 }
             }
 
+            var presentationTimestamp = Stopwatch.GetTimestamp();
+            var renderIntervalTicks = Stopwatch.Frequency / settings.RenderFrameRate;
+            var renderRequested = presentationTimestamp >= nextPresentationTimestamp;
+
             if (cpuRunner is not null)
             {
                 try
@@ -395,14 +403,22 @@ internal static class Program
                         }
                     }
 
-                    var interpolationProgress = (float)(frameAccumulator / frameDuration);
-                    SnesVideoRenderer.RenderFrame(
-                        cpuRunner.MemoryBus.Hardware,
-                        frameBuffer,
-                        interpolationProgress);
-                    if (!SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, SnesVideoRenderer.Width * SnesVideoRenderer.BytesPerPixel))
+                    if (renderRequested)
                     {
-                        statusMessage = $"Could not update the game frame: {SDL.GetError()}";
+                        var renderTimestamp = Stopwatch.GetTimestamp();
+                        var timeSinceLoopStart = (double)(renderTimestamp - currentTimestamp) / Stopwatch.Frequency;
+                        var interpolationProgress = (float)Math.Clamp(
+                            (frameAccumulator + timeSinceLoopStart) / frameDuration,
+                            0.0,
+                            1.0);
+                        SnesVideoRenderer.RenderFrame(
+                            cpuRunner.MemoryBus.Hardware,
+                            frameBuffer,
+                            interpolationProgress);
+                        if (!SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, SnesVideoRenderer.Width * SnesVideoRenderer.BytesPerPixel))
+                        {
+                            statusMessage = $"Could not update the game frame: {SDL.GetError()}";
+                        }
                     }
                 }
                 catch (Exception exception) when (exception is NotSupportedException or InvalidOperationException)
@@ -421,9 +437,7 @@ internal static class Program
                 frameAccumulator = 0;
             }
 
-            var presentationTimestamp = Stopwatch.GetTimestamp();
-            var renderIntervalTicks = Stopwatch.Frequency / settings.RenderFrameRate;
-            if (presentationTimestamp >= nextPresentationTimestamp)
+            if (renderRequested)
             {
                 if (!SDL.GetCurrentRenderOutputSize(renderer, out outputWidth, out outputHeight)
                     || outputWidth <= 0
@@ -468,11 +482,9 @@ internal static class Program
 
                 SDL.RenderPresent(renderer);
 
-                if (presentationTimestamp >= nextPresentationTimestamp)
-                {
-                    var elapsedIntervals = ((presentationTimestamp - nextPresentationTimestamp) / renderIntervalTicks) + 1;
-                    nextPresentationTimestamp += elapsedIntervals * renderIntervalTicks;
-                }
+                var presentedTimestamp = Stopwatch.GetTimestamp();
+                var elapsedIntervals = ((presentedTimestamp - nextPresentationTimestamp) / renderIntervalTicks) + 1;
+                nextPresentationTimestamp += elapsedIntervals * renderIntervalTicks;
             }
 
             var timestampAfterPresent = Stopwatch.GetTimestamp();

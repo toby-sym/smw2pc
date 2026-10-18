@@ -10,7 +10,7 @@ public static class SnesVideoRenderer
     private const int MaximumInterpolatedScrollDelta = 16;
     private const int MaximumInterpolatedObjectDelta = 32;
 
-    public static void RenderFrame(SnesHardware hardware, Span<byte> rgbaPixels, float interpolationProgress = 1f)
+    public static void RenderFrame(SnesHardware hardware, Span<byte> rgbaPixels, float interpolationProgress = 0f)
     {
         ArgumentNullException.ThrowIfNull(hardware);
         var framePixelCount = Width * Height;
@@ -77,7 +77,7 @@ public static class SnesVideoRenderer
                 videoRam,
                 colorRam,
                 scrollInterpolationProgress);
-            if (interpolationProgress < 1f
+            if (interpolationProgress > 0f
                 && hardware.HasPreviousPpuFrameScrollOffsets
                 && HasModeSevenScanline(hardware))
             {
@@ -125,8 +125,7 @@ public static class SnesVideoRenderer
         ReadOnlySpan<byte> pixelSources,
         float interpolationProgress)
     {
-        var previousFrameWeight = 1f - interpolationProgress;
-        if (previousFrameWeight <= 0f)
+        if (interpolationProgress <= 0f)
         {
             return;
         }
@@ -154,8 +153,8 @@ public static class SnesVideoRenderer
                     vertical = 0;
                 }
 
-                horizontalShifts[background] = -horizontal * previousFrameWeight;
-                verticalShifts[background] = -vertical * previousFrameWeight;
+                horizontalShifts[background] = horizontal * interpolationProgress;
+                verticalShifts[background] = vertical * interpolationProgress;
             }
 
             for (var screenX = 0; screenX < Width; screenX++)
@@ -844,7 +843,7 @@ public static class SnesVideoRenderer
                     var xDelta = x - previousX;
                     if (Math.Abs(xDelta) <= MaximumInterpolatedObjectDelta)
                     {
-                        x = previousX + (xDelta * interpolationProgress);
+                        x += xDelta * interpolationProgress;
                     }
 
                     var previousY = previousObjectRam[objectAddress + 1];
@@ -860,16 +859,10 @@ public static class SnesVideoRenderer
 
                     if (Math.Abs(yDelta) <= MaximumInterpolatedObjectDelta)
                     {
-                        y = previousY + (yDelta * interpolationProgress);
+                        y += yDelta * interpolationProgress;
                     }
                 }
             }
-
-            // Preserve the SNES's binary object pixels. Fractional object positions make
-            // the per-pixel coverage path blend sprite edges into neighboring colors,
-            // which turns into a visible halo after the framebuffer is scaled up.
-            x = MathF.Round(x, MidpointRounding.AwayFromZero);
-            y = MathF.Round(y, MidpointRounding.AwayFromZero);
 
             var large = (currentHighBits & 2) != 0;
             var objectSize = large ? largeSize : smallSize;
@@ -1067,10 +1060,10 @@ public static class SnesVideoRenderer
             verticalDelta = 0;
         }
 
-        // Sample each layer at its own intermediate scroll position before compositing;
-        // shifting the finished frame would mix layers that move at different speeds.
-        var sampleShiftX = -horizontalDelta * (1f - interpolationProgress);
-        var sampleShiftY = -verticalDelta * (1f - interpolationProgress);
+        // Predict each layer from its last two scroll positions before compositing;
+        // this keeps the rendered camera aligned with display time without a full-frame delay.
+        var sampleShiftX = horizontalDelta * interpolationProgress;
+        var sampleShiftY = verticalDelta * interpolationProgress;
         var characterBaseRegister = registers[0x0B + background / 2];
         var characterBase = ((background & 1) == 0
             ? characterBaseRegister & 0x0F
