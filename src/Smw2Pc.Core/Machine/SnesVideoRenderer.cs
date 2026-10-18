@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.CompilerServices;
 
 namespace Smw2Pc.Core.Machine;
 
@@ -9,6 +10,13 @@ public static class SnesVideoRenderer
     public const int BytesPerPixel = 4;
     private const int MaximumInterpolatedScrollDelta = 16;
     private const int MaximumInterpolatedObjectDelta = 32;
+    private const int TilePixels = 8 * 8;
+    private const int TwoBppTileCount = 0x10000 / 16;
+    private const int FourBppTileCount = 0x10000 / 32;
+    [ThreadStatic]
+    private static TileDecodeCache? activeTileDecodeCache;
+    [ThreadStatic]
+    private static TileDecodeCache? reusableTileDecodeCache;
 
     public static void RenderFrame(SnesHardware hardware, Span<byte> rgbaPixels, float interpolationProgress = 0f)
     {
@@ -29,6 +37,10 @@ public static class SnesVideoRenderer
         var videoRam = hardware.VideoRam.Span;
         var colorRam = hardware.ColorRam.Span;
         var backdropColor = ReadColorValue(colorRam, 0);
+        var previousTileDecodeCache = activeTileDecodeCache;
+        var tileDecodeCache = reusableTileDecodeCache ??= new TileDecodeCache();
+        tileDecodeCache.BeginFrame();
+        activeTileDecodeCache = tileDecodeCache;
         var pixelSourcesBuffer = ArrayPool<byte>.Shared.Rent(framePixelCount);
         var pixelColorsBuffer = ArrayPool<ushort>.Shared.Rent(framePixelCount);
 
@@ -97,9 +109,11 @@ public static class SnesVideoRenderer
                     ArrayPool<byte>.Shared.Return(sourcePixels);
                 }
             }
+
         }
         finally
         {
+            activeTileDecodeCache = previousTileDecodeCache;
             ArrayPool<byte>.Shared.Return(pixelSourcesBuffer);
             ArrayPool<ushort>.Shared.Return(pixelColorsBuffer);
         }
@@ -697,17 +711,21 @@ public static class SnesVideoRenderer
                 + ((d * transformedY) & ~63)
                 + (centerY << 8);
         var repeatMode = (mode7Settings >> 6) & 0x03;
+        var horizontalDirection = (mode7Settings & 0x01) != 0 ? -1 : 1;
+        var sourceX = originX + (a * (horizontalDirection < 0 ? 255 : 0));
+        var sourceY = originY + (c * (horizontalDirection < 0 ? 255 : 0));
+        var horizontalStepX = a * horizontalDirection;
+        var horizontalStepY = c * horizontalDirection;
 
-        for (var screenX = 0; screenX < Width; screenX++)
+        for (var screenX = 0; screenX < Width; screenX++, sourceX += horizontalStepX, sourceY += horizontalStepY)
         {
             if (IsLayerWindowed(registers, 0, subScreen, screenX))
             {
                 continue;
             }
 
-            var transformedX = (mode7Settings & 0x01) != 0 ? 255 - screenX : screenX;
-            var pixelX = (originX + (a * transformedX)) >> 8;
-            var pixelY = (originY + (c * transformedX)) >> 8;
+            var pixelX = sourceX >> 8;
+            var pixelY = sourceY >> 8;
             var outsideTilemap = pixelX < 0 || pixelX >= 1024 || pixelY < 0 || pixelY >= 1024;
             if (outsideTilemap && repeatMode == 2)
             {
@@ -831,10 +849,8 @@ public static class SnesVideoRenderer
             if (hasPreviousObjectFrame && interpolationProgress < 1f)
             {
                 var previousHighBits = (previousObjectRam[512 + (objectIndex / 4)] >> ((objectIndex & 3) * 2)) & 0x03;
-                var previousTile = previousObjectRam[objectAddress + 2];
                 var previousAttributes = previousObjectRam[objectAddress + 3];
-                var sameObject = previousTile == tile
-                    && ((previousAttributes ^ attributes) & 0x3F) == 0
+                var sameObject = ((previousAttributes ^ attributes) & 0x3F) == 0
                     && ((previousHighBits ^ currentHighBits) & 0x02) == 0;
                 if (sameObject)
                 {
@@ -1314,6 +1330,12 @@ public static class SnesVideoRenderer
         int x,
         int y)
     {
+        var cache = activeTileDecodeCache;
+        if (cache is not null)
+        {
+            return cache.ReadPixel(videoRam, tileAddress, bitsPerPixel, x, y);
+        }
+
         var bit = 0x80 >> x;
         var colorIndex = 0;
         for (var plane = 0; plane < bitsPerPixel; plane++)
@@ -1326,6 +1348,84 @@ public static class SnesVideoRenderer
         }
 
         return colorIndex;
+    }
+
+    private sealed class TileDecodeCache
+    {
+        private const int MaximumTileCount = TwoBppTileCount + FourBppTileCount;
+        private const int MaximumTileByteCount = 32;
+        private readonly byte[] sourceTileBytes = new byte[MaximumTileCount * MaximumTileByteCount];
+        private readonly byte[] decodedPixels = new byte[MaximumTileCount * TilePixels];
+        private readonly bool[] decodedTiles = new bool[MaximumTileCount];
+        private readonly int[] checkedFrame = new int[MaximumTileCount];
+        private int frameNumber;
+
+        public void BeginFrame()
+        {
+            frameNumber++;
+            if (frameNumber == int.MaxValue)
+            {
+                Array.Clear(checkedFrame);
+                frameNumber = 1;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int ReadPixel(ReadOnlySpan<byte> videoRam, int tileAddress, int bitsPerPixel, int x, int y)
+        {
+            var isTwoBpp = bitsPerPixel == 2;
+            var tileIndex = (tileAddress >> (isTwoBpp ? 4 : 5)) & (isTwoBpp
+                ? TwoBppTileCount - 1
+                : FourBppTileCount - 1);
+            if (!isTwoBpp)
+            {
+                tileIndex += TwoBppTileCount;
+            }
+
+            var pixelOffset = tileIndex * TilePixels;
+            if (checkedFrame[tileIndex] != frameNumber)
+            {
+                checkedFrame[tileIndex] = frameNumber;
+                var tileByteCount = bitsPerPixel * 8;
+                var source = videoRam.Slice(tileAddress, tileByteCount);
+                var sourceOffset = tileIndex * MaximumTileByteCount;
+                var cachedSource = sourceTileBytes.AsSpan(sourceOffset, tileByteCount);
+                if (!decodedTiles[tileIndex] || !source.SequenceEqual(cachedSource))
+                {
+                    source.CopyTo(cachedSource);
+                    DecodeTile(videoRam, tileAddress, bitsPerPixel, decodedPixels.AsSpan(pixelOffset, TilePixels));
+                    decodedTiles[tileIndex] = true;
+                }
+            }
+
+            return decodedPixels[pixelOffset + (y * 8) + x];
+        }
+
+        private static void DecodeTile(
+            ReadOnlySpan<byte> videoRam,
+            int tileAddress,
+            int bitsPerPixel,
+            Span<byte> pixels)
+        {
+            for (var y = 0; y < 8; y++)
+            {
+                for (var x = 0; x < 8; x++)
+                {
+                    var bit = 0x80 >> x;
+                    var colorIndex = 0;
+                    for (var plane = 0; plane < bitsPerPixel; plane++)
+                    {
+                        var planeAddress = tileAddress + ((plane / 2) * 16) + (y * 2) + (plane & 1);
+                        if ((videoRam[planeAddress & 0xFFFF] & bit) != 0)
+                        {
+                            colorIndex |= 1 << plane;
+                        }
+                    }
+
+                    pixels[(y * 8) + x] = (byte)colorIndex;
+                }
+            }
+        }
     }
 
     private static int ScaleChannel(int channel, int brightness)

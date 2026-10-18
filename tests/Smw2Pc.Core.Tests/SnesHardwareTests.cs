@@ -131,8 +131,8 @@ public sealed class SnesHardwareTests
         var pixels = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.5f);
 
-        var halfwayPixel = ((20 * SnesVideoRenderer.Width) + 33) * SnesVideoRenderer.BytesPerPixel;
-        var solidPixel = ((20 * SnesVideoRenderer.Width) + 34) * SnesVideoRenderer.BytesPerPixel;
+        var halfwayPixel = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
+        var solidPixel = ((20 * SnesVideoRenderer.Width) + 25) * SnesVideoRenderer.BytesPerPixel;
         Assert.IsInRange((byte)128, (byte)144, pixels[halfwayPixel]);
         Assert.AreEqual(byte.MaxValue, pixels[solidPixel]);
 
@@ -152,11 +152,20 @@ public sealed class SnesHardwareTests
         runner.Run(18_000);
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.5f);
 
-        var backgroundPixel = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
-        var clearPixel = ((20 * SnesVideoRenderer.Width) + 100) * SnesVideoRenderer.BytesPerPixel;
+        var animatedTileHalfwayPixel = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
         var currentObjectPixel = ((20 * SnesVideoRenderer.Width) + 31) * SnesVideoRenderer.BytesPerPixel;
-        CollectionAssert.AreEqual(pixels.AsSpan(clearPixel, 3).ToArray(), pixels.AsSpan(backgroundPixel, 3).ToArray());
+        Assert.IsInRange((byte)120, (byte)136, pixels[animatedTileHalfwayPixel]);
         Assert.AreEqual(byte.MaxValue, pixels[currentObjectPixel]);
+
+        SetVideoRamAddress(memoryBus, 0x10);
+        for (var row = 0; row < 16; row++)
+        {
+            memoryBus.WriteByte(0x002118, 0);
+            memoryBus.WriteByte(0x002119, 0);
+        }
+
+        SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 1f);
+        Assert.AreEqual((byte)0, pixels[currentObjectPixel]);
     }
 
     [TestMethod]
@@ -193,11 +202,61 @@ public sealed class SnesHardwareTests
         Assert.AreEqual(1, memoryBus.Hardware.GetBackgroundScrollDeltaForScanline(1, 0).Horizontal);
         var pixels = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.5f);
-        var halfwayPixel = 0;
+        var halfwayPixel = SnesVideoRenderer.BytesPerPixel;
         Assert.IsInRange((byte)120, (byte)140, pixels[halfwayPixel]);
 
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 1f);
         Assert.IsGreaterThan((byte)240, pixels[halfwayPixel]);
+    }
+
+    [TestMethod]
+    public void ModeSevenAffineSteppingPreservesHorizontalFlip()
+    {
+        var image = CreateRomImage();
+        image[0] = 0x80;
+        image[1] = 0xFE;
+        using var romFile = TemporaryRomFile.Create(image);
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+
+        memoryBus.WriteByte(0x002100, 0x0F);
+        memoryBus.WriteByte(0x002105, 7);
+        memoryBus.WriteByte(0x00212C, 1);
+        memoryBus.WriteByte(0x002115, 0x80);
+        SetVideoRamAddress(memoryBus, 0);
+        for (var word = 0; word < 1024; word++)
+        {
+            memoryBus.WriteByte(0x002118, 0);
+            memoryBus.WriteByte(0x002119, (byte)((word & 7) + 1));
+        }
+
+        for (var color = 1; color <= 8; color++)
+        {
+            memoryBus.WriteByte(0x002121, (byte)color);
+            memoryBus.WriteByte(0x002122, (byte)(color * 3));
+            memoryBus.WriteByte(0x002122, 0);
+        }
+
+        memoryBus.WriteByte(0x00211B, 0);
+        memoryBus.WriteByte(0x00211B, 1);
+        memoryBus.WriteByte(0x00211E, 0);
+        memoryBus.WriteByte(0x00211E, 1);
+        runner.Run(18_000);
+
+        var pixels = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
+        SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 1f);
+        var firstPixel = 0;
+        var lastPixel = (SnesVideoRenderer.Width - 1) * SnesVideoRenderer.BytesPerPixel;
+        var unflippedFirst = pixels[firstPixel];
+        var unflippedLast = pixels[lastPixel];
+        Assert.AreNotEqual(unflippedFirst, unflippedLast);
+
+        memoryBus.WriteByte(0x00211A, 1);
+        runner.Run(18_000);
+        SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 1f);
+
+        Assert.AreEqual(unflippedLast, pixels[firstPixel]);
+        Assert.AreEqual(unflippedFirst, pixels[lastPixel]);
     }
 
     private static void SetObjectZero(SnesMemoryBus memoryBus, byte x, byte y, byte tile = 0)
