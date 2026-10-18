@@ -16,6 +16,7 @@
       <HintPath>$(MSBuildSDKsPath)\..\Roslyn\bincore\Microsoft.CodeAnalysis.CSharp.dll</HintPath>
     </Reference>
     <EmbeddedResource Include="..\Smw2Pc.Core\Cpu\CpuInstructionExecutor.cs" LogicalName="CpuInstructionExecutor.cs" />
+    <EmbeddedResource Include="..\Smw2Pc.Core\Cpu\CpuInstructionSet.cs" LogicalName="CpuInstructionSet.cs" />
     <EmbeddedResource Include="..\Smw2Pc.Core\Audio\Spc700Cpu.cs" LogicalName="Spc700Cpu.cs" />
   </ItemGroup>
 
