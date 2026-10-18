@@ -53,6 +53,7 @@ try
         MainCpuBlocks = blocks.Count,
         WritableCodeVariants = blocks.Count(b => (b.StartAddress >> 16) is 0x7E or 0x7F),
         AudioEntries = recorder.AudioEntries.Count,
+        AudioDiscovery = "Observed SPC700 instructions plus every SPC RAM byte value captured at proof checkpoints",
         RuntimeCompilerIncluded = false,
         InterpreterFallbackIncluded = false,
         discovery.RecognizedSmwDispatchers,

@@ -34,9 +34,18 @@ internal sealed class ProfileRecorder(CodeDiscovery discovery)
             if ((frame + 1) % 600 == 0)
                 Console.WriteLine($"  {name}: X={bus.Hardware.ReadWorkRam(0x94) | bus.Hardware.ReadWorkRam(0x95) << 8}, message={bus.Hardware.ReadWorkRam(0x1426)}, introTimer={bus.Hardware.ReadWorkRam(0x13D3)}");
             if ((frame + 1) % 60 == 0 || frame + 1 == frames)
+            {
+                CaptureAudioMemory(bus.Hardware.Apu.AudioRam.Span);
                 proof.Checkpoints.Add(ProofPlayback.Capture(runner, frame + 1, Convert.ToHexString(audioHash.GetCurrentHash())));
+            }
             if (runner.State.Halted) throw new InvalidDataException($"CPU halted in profile {name} at frame {frame + 1}.");
         }
         return proof;
+    }
+
+    private void CaptureAudioMemory(ReadOnlySpan<byte> audioRam)
+    {
+        for (var address = 0; address < audioRam.Length; address++)
+            AudioEntries.Add(((ushort)address, audioRam[address]));
     }
 }

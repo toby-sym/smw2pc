@@ -113,6 +113,11 @@ internal static class RomEmitter
     {
         var entries = audioEntries.OrderBy(e => e.Address).ThenBy(e => e.Opcode).ToArray();
         var source = new StringBuilder("using Smw2Pc.Core.Recompilation;\nnamespace Smw2Pc.Core.Audio;\ninternal sealed partial class Spc700Cpu\n{\n");
+        source.AppendLine("private static readonly Func<Spc700Cpu, int>[] AudioMethods = CreateAudioMethods();");
+        source.AppendLine("private static Func<Spc700Cpu, int>[] CreateAudioMethods() => [");
+        for (var opcode = 0; opcode < 256; opcode++)
+            source.AppendLine($"static cpu => cpu.TranslatedAudio_{opcode:X2}(),");
+        source.AppendLine("];\n");
         source.AppendLine("private static readonly Dictionary<uint, Func<Spc700Cpu, int>> TranslatedAudioEntries = CreateAudioEntries();");
         source.AppendLine("private int ExecuteTranslatedStep() { uint key = ((uint)ProgramCounter << 8) | (byte)bus.ReadSpcMemory(ProgramCounter); if (TranslatedAudioEntries.TryGetValue(key, out var code)) return code(this); throw new MissingCompiledCodeException($\"No compiled SPC700 code at ${ProgramCounter:X4}, opcode ${(byte)key:X2}. Rebuild with an audio profile covering this path.\"); }");
         source.AppendLine("private static Dictionary<uint, Func<Spc700Cpu, int>> CreateAudioEntries() { var entries = new Dictionary<uint, Func<Spc700Cpu, int>>();");
@@ -122,7 +127,7 @@ internal static class RomEmitter
         {
             source.AppendLine($"private static void AddAudio{part}(Dictionary<uint, Func<Spc700Cpu, int>> entries) {{");
             foreach (var entry in entries.Skip(part * 256).Take(256))
-                source.AppendLine($"entries.Add(0x{((uint)entry.Address << 8) | entry.Opcode:X6}u, static cpu => cpu.TranslatedAudio_{entry.Opcode:X2}());");
+                source.AppendLine($"entries.Add(0x{((uint)entry.Address << 8) | entry.Opcode:X6}u, AudioMethods[0x{entry.Opcode:X2}]);");
             source.AppendLine("}");
         }
         return source.AppendLine("}").ToString();
