@@ -49,6 +49,7 @@ internal sealed class CodeDiscovery(SnesRom rom)
         while (pending.TryDequeue(out var key))
         {
             if (!visited.Add(key)) continue;
+            EnqueueAllModes(key.Address);
             if (visited.Count > 150_000)
                 throw new InvalidDataException("Static discovery exceeded 150,000 entries; inspect the generated control-flow report.");
             DecodedCpuBlock block;
@@ -176,6 +177,8 @@ internal sealed class CodeDiscovery(SnesRom rom)
         foreach (var mode in new byte[] { 0, 0x10, 0x20, 0x30 }) Enqueue(address, mode, false);
         if (includeEmulation) Enqueue(address, 0x30, true);
     }
+
+    private void EnqueueAllModes(uint address) => AllModes(address);
 
     private void Enqueue(uint address, byte mode, bool emulation)
     {
