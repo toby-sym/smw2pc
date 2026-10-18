@@ -68,6 +68,11 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Contains("--verify-native")) return NativeDependencyProof.Run();
+        if (!NativeCpuRunner.IsRecompiled)
+        {
+            Console.Error.WriteLine("The desktop player requires a ROM-specific compiled build. Run tools/build-rom-exe.ps1 with the target ROM.");
+            return 2;
+        }
         if (args.Contains("--verify") || args.Contains("--headless"))
             return HeadlessProof.Run(args);
         var settings = DesktopSettings.Load();

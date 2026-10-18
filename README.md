@@ -1,17 +1,18 @@
 # SMW2PC
 
-Native 65C816 translation runner for Super Mario World, with an SDL3 desktop
-front end.
+ROM-specific static recompilation player for Super Mario World, with an SDL3
+desktop front end.
 
-Run it with:
+Build and run the compiled player with:
 
-```sh
-dotnet run --project src/Smw2Pc.Desktop
+```powershell
+.\tools\build-rom-exe.ps1 -Rom ".\Super Mario World (Europe).sfc"
+.\artifacts\rom-exe\SMW2PC.Recompiled.exe
 ```
 
 Click **Open ROM** and choose a local `.sfc` or `.smc` file, or a `.zip` archive
-containing exactly one such file. SMW2PC checks the cartridge header, starts the
-translated CPU, and displays the SNES video output. Use the arrow keys to move,
+containing exactly one such file. The compiled player checks the cartridge
+identity and displays the SNES video output. Use the arrow keys to move,
 **Z** to jump, **X** to run, **Enter** for Start, **Right Shift** for Select,
 **A/S** for Y/X, and **Q/W** for L/R. Press **F1** to open another ROM.
 
@@ -20,21 +21,18 @@ size, aspect ratio, and smooth or sharp scaling. The render cap can be adjusted
 from 15 to 240 FPS. These options affect presentation only: game logic continues
 at the ROM's native PAL or NTSC rate. Settings are saved between launches.
 
-The core translates 65C816 instruction blocks into .NET IL, which the .NET JIT
-compiles for the host CPU. It can execute code from cartridge ROM and copied
-WRAM. The tested Super Mario World (Europe) ROM reaches its intro, Yoshi's
-Island overworld, and Yoshi's House; player movement responds in the first
-level. This confirms the current boot-to-gameplay milestone, while the full game
-and every gameplay mechanic still need validation. The decoder has entries for
-all 256 opcode bytes in the [WDC W65C816S datasheet's opcode matrix](https://www.westerndesigncenter.com/wdc/documentation/w65c816s.pdf)
-(Table 5-4). This checks opcode coverage, while instruction behavior and timing
-still need broader validation.
+The player executes generated host methods for 65C816 and SPC700 instructions.
+It does not translate or interpret CPU opcodes at runtime. Its strict dispatch
+stops with a coverage error if a code path was not compiled. Desktop startup
+refuses to run an uncompiled build. The build-time recompiler uses a reference
+runner to discover and verify paths; that runner is not included in the player.
 
 The hardware path includes LoROM/WRAM mapping, DMA/HDMA, PPU tile, sprite and
 Mode 7 output, controller input, frame-based VBlank/NMI, and a separate SPC700
-audio subsystem. The SPC700 executes its own instruction stream while the main
-65C816 remains translated. The APU includes the boot ROM protocol, timers,
-bidirectional ports, BRR sample playback, eight DSP voices, and SDL3 stereo
+audio subsystem. The player models SNES memory, PPU, DMA, timers, and audio
+hardware while running the ROM's CPU instructions as compiled host code. The
+APU includes the boot ROM protocol, timers, bidirectional ports, BRR sample
+playback, eight DSP voices, and SDL3 stereo
 output. Audio timing and DSP interpolation are approximate; this is not a
 cycle-accurate sound chip implementation. PPU features, DMA timing, interrupts,
 and main CPU timing also remain partial, so compatibility beyond the verified
@@ -46,17 +44,9 @@ Run the core tests with:
 dotnet test Smw2Pc.sln
 ```
 
-## ROM-specific static recompilation proof of concept
+## ROM-specific static recompilation
 
-The standard `dotnet run` launch above is the development runner: it translates
-CPU blocks at runtime and uses the .NET JIT. To build a ROM-specific player with
-no runtime CPU translator or CPU opcode interpreter, run:
-
-```powershell
-.\tools\build-rom-exe.ps1 -Rom ".\Super Mario World (Europe).sfc"
-```
-
-The verified output is `artifacts\rom-exe\SMW2PC.Recompiled.exe` for Windows
+The output is `artifacts\rom-exe\SMW2PC.Recompiled.exe` for Windows
 x64. It is a self-contained, single-file .NET application with ReadyToRun host
 code, the ROM embedded, and SDL native libraries bundled. It does not require a
 separate .NET installation. The executable also works when moved on its own;
@@ -65,11 +55,12 @@ cache when launched. Other runtime identifiers can be requested with
 `-RuntimeIdentifier`, but only `win-x64` has been built and verified so far.
 
 The builder runs three deterministic 3,600 frame profiles (`attract`, `play`,
-and `exercise`), records reached CPU and SPC700 instructions, discovers static
+and `exercise`), records reached CPU instructions and SPC RAM snapshots, discovers static
 control flow and recognized SMW inline dispatch tables, then emits specialized
 C# host methods. The .NET publish step compiles those methods into the player.
-For the supplied Europe ROM, the generated manifest reports 21,983 main CPU
-blocks, 130 writable code variants, and 1,339 audio entries. The strict player
+For the supplied Europe ROM, the generated manifest reports 23,050 main CPU
+blocks, 130 writable code variants, and 84,790 audio entries from executed
+instructions and SPC RAM snapshots. The strict player
 rejects any uncompiled code path with a coverage error; it contains no runtime
 translator, CPU instruction dispatcher, SPC700 opcode interpreter, or
 `Reflection.Emit` dependency.
