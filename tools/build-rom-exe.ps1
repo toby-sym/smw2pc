@@ -59,7 +59,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE."
 }
 
-$executableName = if ($RuntimeIdentifier.StartsWith("win-")) { "SMW2PC.Recompiled.exe" } else { "SMW2PC.Recompiled" }
+$executableName = if ($RuntimeIdentifier.StartsWith("win-")) { "SMW.exe" } else { "SMW" }
 $executablePath = Join-Path $outputPath $executableName
 Copy-Item -LiteralPath (Join-Path $generatedDirectory "manifest.json") -Destination (Join-Path $outputPath "manifest.json")
 Copy-Item -LiteralPath (Join-Path $generatedDirectory "proof.json") -Destination (Join-Path $outputPath "proof.json")
