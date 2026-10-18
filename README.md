@@ -57,10 +57,12 @@ cache when launched. Other runtime identifiers can be requested with
 The builder runs three deterministic 3,600 frame profiles (`attract`, `play`,
 and `exercise`), records reached CPU instructions and SPC RAM snapshots, discovers static
 control flow and recognized SMW inline dispatch tables, then emits specialized
-C# host methods. The .NET publish step compiles those methods into the player.
-For the supplied Europe ROM, the generated manifest reports 23,050 main CPU
-blocks, 130 writable code variants, and 84,790 audio entries from executed
-instructions and SPC RAM snapshots. The strict player
+C# host methods. Static discovery compiles each reached ROM code entry in all
+four native M/X states and emulation mode. The .NET publish step compiles those
+methods into the player. For the supplied Europe ROM, the generated manifest
+reports 106,115 main CPU blocks, 130 writable code variants, and 84,790 audio
+entries from executed instructions and SPC RAM snapshots; static analysis found
+no unresolved control transfers. The strict player
 rejects any uncompiled code path with a coverage error; it contains no runtime
 translator, CPU instruction dispatcher, SPC700 opcode interpreter, or
 `Reflection.Emit` dependency.

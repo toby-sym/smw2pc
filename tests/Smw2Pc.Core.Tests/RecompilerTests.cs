@@ -108,8 +108,9 @@ public sealed class RecompilerTests
         var discovery = new CodeDiscovery(rom);
         discovery.Analyze();
 
-        Assert.IsTrue(discovery.Blocks.Any(block => block.StartAddress == 0x0DA68E
-            && block.StatusMode == 0x30 && !block.EmulationMode));
+        foreach (var mode in new byte[] { 0x00, 0x10, 0x20, 0x30 })
+            Assert.IsTrue(discovery.Blocks.Any(block => block.StartAddress == 0x0DA68E
+                && block.StatusMode == mode && !block.EmulationMode), $"Missing native M/X=${mode:X2} entry.");
         Assert.IsTrue(discovery.Blocks.Any(block => block.StartAddress == 0x0DA68E
             && block.StatusMode == 0x30 && block.EmulationMode));
         Assert.Contains("$0DA13F: 240 contiguous 3-byte ROM pointers", discovery.InferredPointerTables);

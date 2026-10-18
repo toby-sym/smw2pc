@@ -7,7 +7,8 @@ namespace Smw2Pc.Recompiler;
 
 internal static class RomEmitter
 {
-    private const int BlocksPerGeneratedClass = 12_000;
+    private const int BlocksPerGeneratedClass = 1_000;
+    private const int EntriesPerGeneratedMethod = 16;
 
     public static void Write(SnesRom rom, IReadOnlyList<DecodedCpuBlock> blocks,
         HashSet<(ushort Address, byte Opcode)> audioEntries, string directory)
@@ -66,19 +67,19 @@ internal static class RomEmitter
             .DistinctBy(candidate => (candidate.BlockIndex, candidate.StartIndex, Guard: candidate.Guard is null ? "ROM" : Convert.ToHexString(candidate.Guard)))
             .ToArray())).ToArray();
         source.AppendLine("private static Dictionary<ulong, Entry[]> CreateEntries() { var entries = new Dictionary<ulong, Entry[]>();");
-        for (var part = 0; part * 256 < groups.Length; part++) source.AppendLine($"AddEntries{part}(entries);");
+        for (var part = 0; part * EntriesPerGeneratedMethod < groups.Length; part++) source.AppendLine($"AddEntries{part}(entries);");
         source.AppendLine("return entries; }");
-        for (var part = 0; part * 256 < groups.Length; part++)
+        for (var part = 0; part * EntriesPerGeneratedMethod < groups.Length; part++)
         {
             source.AppendLine($"private static void AddEntries{part}(Dictionary<ulong, Entry[]> entries) {{");
-            foreach (var group in groups.Skip(part * 256).Take(256))
+            foreach (var group in groups.Skip(part * EntriesPerGeneratedMethod).Take(EntriesPerGeneratedMethod))
             {
                 source.Append($"entries.Add(0x{group.Key:X}UL, [");
                 foreach (var item in group.Entries)
                 {
                     var guard = item.Guard is null
                         ? "null" : "new byte[] { " + string.Join(",", item.Guard.Select(b => $"0x{b:X2}")) + " }";
-                    source.Append($"new Entry({guard}, CompiledRomBlocks{item.BlockIndex / BlocksPerGeneratedClass}.B{item.BlockIndex}, {item.StartIndex}, {item.Terminates.ToString().ToLowerInvariant()}),");
+                    source.Append($"new Entry({guard}, new CompiledRomBlock(CompiledRomBlocks{item.BlockIndex / BlocksPerGeneratedClass}.B{item.BlockIndex}), {item.StartIndex}, {item.Terminates.ToString().ToLowerInvariant()}),");
                 }
                 source.AppendLine("]);");
             }
