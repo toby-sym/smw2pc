@@ -7,6 +7,8 @@ namespace Smw2Pc.Recompiler;
 
 internal static class RomEmitter
 {
+    private const int BlocksPerGeneratedClass = 12_000;
+
     public static void Write(SnesRom rom, IReadOnlyList<DecodedCpuBlock> blocks,
         HashSet<(ushort Address, byte Opcode)> audioEntries, string directory)
     {
@@ -27,9 +29,8 @@ internal static class RomEmitter
     internal static string EmitMain(SnesRom rom, IReadOnlyList<DecodedCpuBlock> blocks)
     {
         var bus = new SnesMemoryBus(rom);
-        var source = new StringBuilder("#nullable enable\nusing Smw2Pc.Core.Machine;\nusing Smw2Pc.Core.Rom;\nusing Smw2Pc.Core.Recompilation;\nnamespace Smw2Pc.Core.Cpu;\ninternal static class CompiledRomProgram\n{\n");
-        source.AppendLine("private delegate int CompiledBlock(CpuState state, SnesMemoryBus memoryBus, int budget, int startIndex);");
-        source.AppendLine("private sealed record Entry(byte[]? ExpectedBytes, CompiledBlock Code, int StartIndex, bool Terminates);");
+        var source = new StringBuilder("#nullable enable\nusing Smw2Pc.Core.Machine;\nusing Smw2Pc.Core.Rom;\nusing Smw2Pc.Core.Recompilation;\nnamespace Smw2Pc.Core.Cpu;\ninternal delegate int CompiledRomBlock(CpuState state, SnesMemoryBus memoryBus, int budget, int startIndex);\ninternal static class CompiledRomProgram\n{\n");
+        source.AppendLine("private sealed record Entry(byte[]? ExpectedBytes, CompiledRomBlock Code, int StartIndex, bool Terminates);");
         source.AppendLine("private static readonly Dictionary<ulong, Entry[]> Entries = CreateEntries();");
         source.AppendLine($"public static void ValidateRom(SnesRom rom) {{ if (rom.Sha256 != \"{rom.Sha256}\") throw new InvalidDataException(\"This compiled player requires its original ROM.\"); }}");
         source.AppendLine("public static int Execute(CpuState state, SnesMemoryBus memoryBus, int budget) {");
@@ -77,36 +78,43 @@ internal static class RomEmitter
                 {
                     var guard = item.Guard is null
                         ? "null" : "new byte[] { " + string.Join(",", item.Guard.Select(b => $"0x{b:X2}")) + " }";
-                    source.Append($"new Entry({guard}, B{item.BlockIndex}, {item.StartIndex}, {item.Terminates.ToString().ToLowerInvariant()}),");
+                    source.Append($"new Entry({guard}, CompiledRomBlocks{item.BlockIndex / BlocksPerGeneratedClass}.B{item.BlockIndex}, {item.StartIndex}, {item.Terminates.ToString().ToLowerInvariant()}),");
                 }
                 source.AppendLine("]);");
             }
             source.AppendLine("}");
         }
 
-        for (var index = 0; index < blocks.Count; index++)
+        source.AppendLine("}");
+        for (var firstBlock = 0; firstBlock < blocks.Count; firstBlock += BlocksPerGeneratedClass)
         {
-            var block = blocks[index];
-            source.AppendLine($"// ${block.StartAddress:X6}, M/X=${block.StatusMode:X2}, E={block.EmulationMode}");
-            source.AppendLine($"private static int B{index}(CpuState state, SnesMemoryBus memoryBus, int budget, int startIndex) {{ int executed = 0; switch (startIndex) {{");
-            for (var instructionIndex = 0; instructionIndex < block.Instructions.Count; instructionIndex++)
-                source.AppendLine($"case {instructionIndex}: goto I{instructionIndex};");
-            source.AppendLine("default: throw new ArgumentOutOfRangeException(nameof(startIndex)); }");
-            for (var instructionIndex = 0; instructionIndex < block.Instructions.Count; instructionIndex++)
+            var lastBlock = Math.Min(firstBlock + BlocksPerGeneratedClass, blocks.Count);
+            source.AppendLine($"internal static class CompiledRomBlocks{firstBlock / BlocksPerGeneratedClass} {{");
+            for (var index = firstBlock; index < lastBlock; index++)
             {
-                var instruction = block.Instructions[instructionIndex];
-                source.AppendLine($"I{instructionIndex}:");
-                source.AppendLine($"CpuInstructionExecutor.{OperationLowerer.MethodName(instruction, block.StatusMode, block.EmulationMode)}(state, memoryBus, 0x{instruction.Operand:X}u, 0x{instruction.NextProgramCounter:X4});");
-                var sequential = !NativeBlockTranslator.EndsBlock(instruction.Operation)
-                    || instruction.Operation is CpuOperation.ResetStatusBits or CpuOperation.SetStatusBits
-                        or CpuOperation.PullStatus or CpuOperation.ExchangeCarryAndEmulation;
-                if (sequential) source.AppendLine($"state.ProgramCounter = 0x{instruction.NextProgramCounter:X4};");
-                source.AppendLine("executed++;");
-                source.AppendLine("if (executed == budget) return executed;");
+                var block = blocks[index];
+                source.AppendLine($"// ${block.StartAddress:X6}, M/X=${block.StatusMode:X2}, E={block.EmulationMode}");
+                source.AppendLine($"internal static int B{index}(CpuState state, SnesMemoryBus memoryBus, int budget, int startIndex) {{ int executed = 0; switch (startIndex) {{");
+                for (var instructionIndex = 0; instructionIndex < block.Instructions.Count; instructionIndex++)
+                    source.AppendLine($"case {instructionIndex}: goto I{instructionIndex};");
+                source.AppendLine("default: throw new ArgumentOutOfRangeException(nameof(startIndex)); }");
+                for (var instructionIndex = 0; instructionIndex < block.Instructions.Count; instructionIndex++)
+                {
+                    var instruction = block.Instructions[instructionIndex];
+                    source.AppendLine($"I{instructionIndex}:");
+                    source.AppendLine($"CpuInstructionExecutor.{OperationLowerer.MethodName(instruction, block.StatusMode, block.EmulationMode)}(state, memoryBus, 0x{instruction.Operand:X}u, 0x{instruction.NextProgramCounter:X4});");
+                    var sequential = !NativeBlockTranslator.EndsBlock(instruction.Operation)
+                        || instruction.Operation is CpuOperation.ResetStatusBits or CpuOperation.SetStatusBits
+                            or CpuOperation.PullStatus or CpuOperation.ExchangeCarryAndEmulation;
+                    if (sequential) source.AppendLine($"state.ProgramCounter = 0x{instruction.NextProgramCounter:X4};");
+                    source.AppendLine("executed++;");
+                    source.AppendLine("if (executed == budget) return executed;");
+                }
+                source.AppendLine("return executed; }");
             }
-            source.AppendLine("return executed; }");
+            source.AppendLine("}");
         }
-        return source.AppendLine("}").ToString();
+        return source.ToString();
     }
 
     private static string EmitAudio(HashSet<(ushort Address, byte Opcode)> audioEntries)
