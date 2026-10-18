@@ -131,10 +131,13 @@ public sealed class SnesHardwareTests
         var pixels = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.5f);
 
-        var halfwayPixel = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
-        var solidPixel = ((20 * SnesVideoRenderer.Width) + 25) * SnesVideoRenderer.BytesPerPixel;
-        Assert.IsInRange((byte)128, (byte)144, pixels[halfwayPixel]);
-        Assert.AreEqual(byte.MaxValue, pixels[solidPixel]);
+        var clearPixel = ((20 * SnesVideoRenderer.Width) + 100) * SnesVideoRenderer.BytesPerPixel;
+        var pixelBeforeInterpolatedPosition = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
+        var firstObjectPixel = ((20 * SnesVideoRenderer.Width) + 25) * SnesVideoRenderer.BytesPerPixel;
+        CollectionAssert.AreEqual(
+            pixels.AsSpan(clearPixel, 3).ToArray(),
+            pixels.AsSpan(pixelBeforeInterpolatedPosition, 3).ToArray());
+        Assert.AreEqual(byte.MaxValue, pixels[firstObjectPixel]);
 
         SetObjectZero(memoryBus, x: 20, y: 20);
         runner.Run(18_000);
@@ -143,17 +146,18 @@ public sealed class SnesHardwareTests
 
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.25f);
 
-        var reverseHalfwayPixel = ((20 * SnesVideoRenderer.Width) + 26) * SnesVideoRenderer.BytesPerPixel;
-        var reverseSolidPixel = ((20 * SnesVideoRenderer.Width) + 27) * SnesVideoRenderer.BytesPerPixel;
-        Assert.IsInRange((byte)56, (byte)72, pixels[reverseHalfwayPixel]);
-        Assert.AreEqual(byte.MaxValue, pixels[reverseSolidPixel]);
+        var pixelBeforeReversePosition = ((20 * SnesVideoRenderer.Width) + 26) * SnesVideoRenderer.BytesPerPixel;
+        var firstReverseObjectPixel = ((20 * SnesVideoRenderer.Width) + 27) * SnesVideoRenderer.BytesPerPixel;
+        CollectionAssert.AreEqual(
+            pixels.AsSpan(clearPixel, 3).ToArray(),
+            pixels.AsSpan(pixelBeforeReversePosition, 3).ToArray());
+        Assert.AreEqual(byte.MaxValue, pixels[firstReverseObjectPixel]);
 
         SetObjectZero(memoryBus, x: 29, y: 20, tile: 1);
         runner.Run(18_000);
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.5f);
 
         var backgroundPixel = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
-        var clearPixel = ((20 * SnesVideoRenderer.Width) + 100) * SnesVideoRenderer.BytesPerPixel;
         var currentObjectPixel = ((20 * SnesVideoRenderer.Width) + 31) * SnesVideoRenderer.BytesPerPixel;
         CollectionAssert.AreEqual(pixels.AsSpan(clearPixel, 3).ToArray(), pixels.AsSpan(backgroundPixel, 3).ToArray());
         Assert.AreEqual(byte.MaxValue, pixels[currentObjectPixel]);

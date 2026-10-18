@@ -865,6 +865,12 @@ public static class SnesVideoRenderer
                 }
             }
 
+            // Preserve the SNES's binary object pixels. Fractional object positions make
+            // the per-pixel coverage path blend sprite edges into neighboring colors,
+            // which turns into a visible halo after the framebuffer is scaled up.
+            x = MathF.Round(x, MidpointRounding.AwayFromZero);
+            y = MathF.Round(y, MidpointRounding.AwayFromZero);
+
             var large = (currentHighBits & 2) != 0;
             var objectSize = large ? largeSize : smallSize;
 
