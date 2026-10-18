@@ -108,6 +108,19 @@ public sealed class SnesHardwareTests
             memoryBus.WriteByte(0x002119, 0);
         }
 
+        SetVideoRamAddress(memoryBus, 0x10);
+        for (var row = 0; row < 8; row++)
+        {
+            memoryBus.WriteByte(0x002118, 0xFF);
+            memoryBus.WriteByte(0x002119, 0);
+        }
+
+        for (var row = 0; row < 8; row++)
+        {
+            memoryBus.WriteByte(0x002118, 0);
+            memoryBus.WriteByte(0x002119, 0);
+        }
+
         SetObjectZero(memoryBus, x: 20, y: 20);
         runner.Run(18_000);
         SetObjectZero(memoryBus, x: 29, y: 20);
@@ -134,15 +147,66 @@ public sealed class SnesHardwareTests
         var reverseSolidPixel = ((20 * SnesVideoRenderer.Width) + 27) * SnesVideoRenderer.BytesPerPixel;
         Assert.IsInRange((byte)56, (byte)72, pixels[reverseHalfwayPixel]);
         Assert.AreEqual(byte.MaxValue, pixels[reverseSolidPixel]);
+
+        SetObjectZero(memoryBus, x: 29, y: 20, tile: 1);
+        runner.Run(18_000);
+        SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.5f);
+
+        var backgroundPixel = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
+        var clearPixel = ((20 * SnesVideoRenderer.Width) + 100) * SnesVideoRenderer.BytesPerPixel;
+        var currentObjectPixel = ((20 * SnesVideoRenderer.Width) + 31) * SnesVideoRenderer.BytesPerPixel;
+        CollectionAssert.AreEqual(pixels.AsSpan(clearPixel, 3).ToArray(), pixels.AsSpan(backgroundPixel, 3).ToArray());
+        Assert.AreEqual(byte.MaxValue, pixels[currentObjectPixel]);
     }
 
-    private static void SetObjectZero(SnesMemoryBus memoryBus, byte x, byte y)
+    [TestMethod]
+    public void RendererInterpolatesBackgroundScrollBetweenFrames()
+    {
+        var image = CreateRomImage();
+        image[0] = 0x80;
+        image[1] = 0xFE;
+        using var romFile = TemporaryRomFile.Create(image);
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var runner = new NativeCpuRunner(memoryBus);
+
+        memoryBus.WriteByte(0x002100, 0x0F);
+        memoryBus.WriteByte(0x002105, 0);
+        memoryBus.WriteByte(0x002107, 4);
+        memoryBus.WriteByte(0x00212C, 1);
+        memoryBus.WriteByte(0x002121, 1);
+        memoryBus.WriteByte(0x002122, 0x1F);
+        memoryBus.WriteByte(0x002122, 0);
+        memoryBus.WriteByte(0x002115, 0x80);
+        SetVideoRamAddress(memoryBus, 0);
+        for (var row = 0; row < 8; row++)
+        {
+            memoryBus.WriteByte(0x002118, 0x80);
+            memoryBus.WriteByte(0x002119, 0);
+        }
+
+        runner.Run(18_000);
+        memoryBus.WriteByte(0x00210D, 1);
+        memoryBus.WriteByte(0x00210D, 0);
+        Assert.AreEqual(1, memoryBus.Hardware.GetBackgroundHorizontalOffset(0));
+        runner.Run(18_000);
+
+        Assert.AreEqual(1, memoryBus.Hardware.GetBackgroundScrollDeltaForScanline(1, 0).Horizontal);
+        var pixels = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
+        SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.5f);
+        var halfwayPixel = 0;
+        Assert.IsInRange((byte)120, (byte)140, pixels[halfwayPixel]);
+
+        SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 1f);
+        Assert.IsLessThan((byte)10, pixels[halfwayPixel]);
+    }
+
+    private static void SetObjectZero(SnesMemoryBus memoryBus, byte x, byte y, byte tile = 0)
     {
         memoryBus.WriteByte(0x002102, 0);
         memoryBus.WriteByte(0x002103, 0);
         memoryBus.WriteByte(0x002104, x);
         memoryBus.WriteByte(0x002104, y);
-        memoryBus.WriteByte(0x002104, 0);
+        memoryBus.WriteByte(0x002104, tile);
         memoryBus.WriteByte(0x002104, 0);
     }
 

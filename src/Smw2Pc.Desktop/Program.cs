@@ -4,10 +4,12 @@ using System.Runtime.InteropServices;
 using SDL3;
 using Smw2Pc.Core.Cpu;
 using Smw2Pc.Core.Machine;
+using Smw2Pc.Core.Recompilation;
 using Smw2Pc.Core.Rom;
 
 internal static class Program
 {
+    private const string CompiledRomResourceName = "Smw2Pc.Desktop.CompiledRom";
     private const int InstructionsPerFrame = 18000;
     private const int MaximumCatchUpFrames = 5;
     private static readonly long SettingsSaveDelayTicks = Stopwatch.Frequency / 2;
@@ -63,8 +65,16 @@ internal static class Program
         new(GameAction.R, "R", "Shoulder"),
     ];
 
-    private static int Main()
+    private static int Main(string[] args)
     {
+        if (args.Contains("--verify-native")) return NativeDependencyProof.Run();
+        if (!NativeCpuRunner.IsRecompiled)
+        {
+            Console.Error.WriteLine("The desktop player requires a ROM-specific compiled build. Run tools/build-rom-exe.ps1 with the target ROM.");
+            return 2;
+        }
+        if (args.Contains("--verify") || args.Contains("--headless"))
+            return HeadlessProof.Run(args);
         var settings = DesktopSettings.Load();
         if (!SDL.Init(SDL.InitFlags.Video))
         {
@@ -104,9 +114,9 @@ internal static class Program
 
         var textRenderer = UiTextRenderer.TryCreate(
             renderer,
-            Path.Combine(AppContext.BaseDirectory, "assets", "fonts", "Inter-Variable.ttf"));
+            BundledAssets.GetFontPath());
 
-        SDL.SetTextureScaleMode(gameTexture, GetScaleMode(settings));
+        SDL.SetTextureScaleMode(gameTexture, SDL.ScaleMode.Nearest);
         var verticalSyncEnabled = SDL.SetRenderVSync(renderer, 1);
         if (!verticalSyncEnabled)
         {
@@ -158,6 +168,39 @@ internal static class Program
         GameAction? rebindingAction = null;
         var settingsSavePending = false;
         var settingsSaveTimestamp = 0L;
+
+        using (var compiledRomStream = typeof(Program).Assembly.GetManifestResourceStream(CompiledRomResourceName))
+        {
+            if (compiledRomStream is not null)
+            {
+                try
+                {
+                    using var romBuffer = new MemoryStream();
+                    compiledRomStream.CopyTo(romBuffer);
+                    loadedRom = SnesRom.LoadBytes(romBuffer.ToArray(), "compiled.sfc");
+                    var memoryBus = new SnesMemoryBus(loadedRom);
+                    cpuRunner = new NativeCpuRunner(memoryBus);
+                    memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
+                    frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
+                    previousTimestamp = Stopwatch.GetTimestamp();
+                    nextPresentationTimestamp = previousTimestamp;
+                    var regionName = loadedRom.Header.IsPalRegion ? "PAL" : "NTSC";
+                    statusMessage = $"Running compiled {loadedRom.Header.Title} · {loadedRom.Header.FrameRateHz:0.##} Hz game timing ({regionName})";
+                    if (!string.IsNullOrEmpty(audioError))
+                    {
+                        statusMessage += $" · {audioError}";
+                    }
+                }
+                catch (Exception exception) when (
+                    exception is IOException
+                        or InvalidDataException
+                        or ArgumentException
+                        or NotSupportedException)
+                {
+                    statusMessage = $"Could not start the compiled ROM: {exception.Message}";
+                }
+            }
+        }
 
         while (running)
         {
@@ -211,7 +254,6 @@ internal static class Program
                         ref settingsTab,
                         settings,
                         window,
-                        gameTexture,
                         ref rebindingAction,
                         ref settingsOpen,
                         ref statusMessage))
@@ -366,6 +408,10 @@ internal static class Program
                 catch (Exception exception) when (exception is NotSupportedException or InvalidOperationException)
                 {
                     statusMessage = $"Execution stopped at {cpuRunner.State.ProgramBank:X2}:{cpuRunner.State.ProgramCounter:X4}: {exception.Message}";
+                    if (exception is MissingCompiledCodeException)
+                    {
+                        RecordExecutionFailure(exception, cpuRunner);
+                    }
                     cpuRunner = null;
                     frameAccumulator = 0;
                 }
@@ -593,11 +639,6 @@ internal static class Program
         };
     }
 
-    private static SDL.ScaleMode GetScaleMode(DesktopSettings settings)
-    {
-        return settings.SmoothScaling ? SDL.ScaleMode.Linear : SDL.ScaleMode.Nearest;
-    }
-
     private static SDL.FRect GetSettingsButton(int outputWidth) => new()
     {
         X = outputWidth - 60,
@@ -679,7 +720,6 @@ internal static class Program
         ref SettingsTab settingsTab,
         DesktopSettings settings,
         IntPtr window,
-        IntPtr gameTexture,
         ref GameAction? rebindingAction,
         ref bool settingsOpen,
         ref string statusMessage)
@@ -774,21 +814,6 @@ internal static class Program
             return true;
         }
 
-        if (IsInside(mouseX, mouseY, GetScalingRow(panel)))
-        {
-            var smoothScaling = !settings.SmoothScaling;
-            if (!SDL.SetTextureScaleMode(
-                    gameTexture,
-                    smoothScaling ? SDL.ScaleMode.Linear : SDL.ScaleMode.Nearest))
-            {
-                statusMessage = $"Could not change texture scaling: {SDL.GetError()}";
-                return false;
-            }
-
-            settings.SmoothScaling = smoothScaling;
-            return true;
-        }
-
         return false;
     }
 
@@ -819,7 +844,8 @@ internal static class Program
         {
             DrawSettingsRow(renderer, textRenderer, GetResolutionRow(panel), $"Window size: {settings.WindowWidth} x {settings.WindowHeight}");
             DrawSettingsRow(renderer, textRenderer, GetAspectRatioRow(panel), $"Aspect ratio: {GetAspectRatioName(settings.AspectRatio)}");
-            DrawSettingsRow(renderer, textRenderer, GetScalingRow(panel), $"Smooth filtering: {(settings.SmoothScaling ? "On" : "Off")}");
+            DrawText(renderer, textRenderer, "Pixel scaling: Sharp (nearest-neighbor)",
+                panel.X + 20, panel.Y + 194, 13, MakeUiColor(181, 194, 211));
 
             DrawText(renderer, textRenderer, $"Presentation cap: {settings.RenderFrameRate} FPS",
                 panel.X + 20, panel.Y + 242, 14, MakeUiColor(248, 250, 255));
@@ -989,14 +1015,6 @@ internal static class Program
         Y = panel.Y + 230,
         W = 36,
         H = 30,
-    };
-
-    private static SDL.FRect GetScalingRow(SDL.FRect panel) => new()
-    {
-        X = panel.X + 12,
-        Y = panel.Y + 184,
-        W = panel.W - 24,
-        H = 34,
     };
 
     private static SDL.FRect GetBindingRow(SDL.FRect panel, int index) => new()
@@ -1178,6 +1196,34 @@ internal static class Program
             && x < rectangle.X + rectangle.W
             && y >= rectangle.Y
             && y < rectangle.Y + rectangle.H;
+    }
+
+    private static void RecordExecutionFailure(Exception exception, NativeCpuRunner runner)
+    {
+        try
+        {
+            var state = runner.State;
+            var logDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SMW2PC");
+            Directory.CreateDirectory(logDirectory);
+            var logPath = Path.Combine(logDirectory, "execution-errors.log");
+            File.AppendAllText(logPath,
+                $"[{DateTimeOffset.Now:O}] ROM execution stopped\n"
+                + $"CPU={state.ProgramBank:X2}:{state.ProgramCounter:X4} A={state.Accumulator:X4} "
+                + $"X={state.X:X4} Y={state.Y:X4} S={state.StackPointer:X4} D={state.DirectPage:X4} "
+                + $"DB={state.DataBank:X2} P={state.Status:X2} E={state.EmulationMode}\n"
+                + $"GameMode=${runner.MemoryBus.ReadByte(0x7E0100):X2} "
+                + $"Level=${runner.MemoryBus.ReadByte(0x7E13BF):X2}\n"
+                + exception + Environment.NewLine + Environment.NewLine);
+        }
+        catch (IOException)
+        {
+            // Keep the on-screen execution error available if local logging fails.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Keep the on-screen execution error available if local logging fails.
+        }
     }
 
     private sealed record FileDialogResult(string? Path, string? Error);

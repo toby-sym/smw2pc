@@ -36,7 +36,19 @@ public sealed class SnesApu
 
     public ReadOnlyMemory<byte> AudioRam => audioRam;
 
+#if !SMW2PC_RECOMPILED
+    internal Action<ushort, byte>? InstructionObserved
+    {
+        get => cpu.InstructionObserved;
+        set => cpu.InstructionObserved = value;
+    }
+#endif
+
+    internal byte[] GetExecutionState() => cpu.GetExecutionState();
+
     public int QueuedSampleFrames => pendingSamples.Count / 2;
+
+    public long TranslatedInstructionsExecuted => cpu.TranslatedInstructionsExecuted;
 
     public byte ReadCpuPort(int port)
     {
