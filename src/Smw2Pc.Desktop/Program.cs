@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using SDL3;
 using Smw2Pc.Core.Cpu;
 using Smw2Pc.Core.Machine;
+using Smw2Pc.Core.Recompilation;
 using Smw2Pc.Core.Rom;
 
 internal static class Program
@@ -403,6 +404,10 @@ internal static class Program
                 catch (Exception exception) when (exception is NotSupportedException or InvalidOperationException)
                 {
                     statusMessage = $"Execution stopped at {cpuRunner.State.ProgramBank:X2}:{cpuRunner.State.ProgramCounter:X4}: {exception.Message}";
+                    if (exception is MissingCompiledCodeException)
+                    {
+                        RecordExecutionFailure(exception, cpuRunner);
+                    }
                     cpuRunner = null;
                     frameAccumulator = 0;
                 }
@@ -1215,6 +1220,34 @@ internal static class Program
             && x < rectangle.X + rectangle.W
             && y >= rectangle.Y
             && y < rectangle.Y + rectangle.H;
+    }
+
+    private static void RecordExecutionFailure(Exception exception, NativeCpuRunner runner)
+    {
+        try
+        {
+            var state = runner.State;
+            var logDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SMW2PC");
+            Directory.CreateDirectory(logDirectory);
+            var logPath = Path.Combine(logDirectory, "execution-errors.log");
+            File.AppendAllText(logPath,
+                $"[{DateTimeOffset.Now:O}] ROM execution stopped\n"
+                + $"CPU={state.ProgramBank:X2}:{state.ProgramCounter:X4} A={state.Accumulator:X4} "
+                + $"X={state.X:X4} Y={state.Y:X4} S={state.StackPointer:X4} D={state.DirectPage:X4} "
+                + $"DB={state.DataBank:X2} P={state.Status:X2} E={state.EmulationMode}\n"
+                + $"GameMode=${runner.MemoryBus.ReadByte(0x7E0100):X2} "
+                + $"Level=${runner.MemoryBus.ReadByte(0x7E13BF):X2}\n"
+                + exception + Environment.NewLine + Environment.NewLine);
+        }
+        catch (IOException)
+        {
+            // Keep the on-screen execution error available if local logging fails.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Keep the on-screen execution error available if local logging fails.
+        }
     }
 
     private sealed record FileDialogResult(string? Path, string? Error);
