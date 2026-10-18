@@ -8,6 +8,7 @@ using Smw2Pc.Core.Rom;
 
 internal static class Program
 {
+    private const string CompiledRomResourceName = "Smw2Pc.Desktop.CompiledRom";
     private const int InstructionsPerFrame = 18000;
     private const int MaximumCatchUpFrames = 5;
     private static readonly long SettingsSaveDelayTicks = Stopwatch.Frequency / 2;
@@ -158,6 +159,39 @@ internal static class Program
         GameAction? rebindingAction = null;
         var settingsSavePending = false;
         var settingsSaveTimestamp = 0L;
+
+        using (var compiledRomStream = typeof(Program).Assembly.GetManifestResourceStream(CompiledRomResourceName))
+        {
+            if (compiledRomStream is not null)
+            {
+                try
+                {
+                    using var romBuffer = new MemoryStream();
+                    compiledRomStream.CopyTo(romBuffer);
+                    loadedRom = SnesRom.LoadBytes(romBuffer.ToArray(), "compiled.sfc");
+                    var memoryBus = new SnesMemoryBus(loadedRom);
+                    cpuRunner = new NativeCpuRunner(memoryBus);
+                    memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
+                    frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
+                    previousTimestamp = Stopwatch.GetTimestamp();
+                    nextPresentationTimestamp = previousTimestamp;
+                    var regionName = loadedRom.Header.IsPalRegion ? "PAL" : "NTSC";
+                    statusMessage = $"Running compiled {loadedRom.Header.Title} · {loadedRom.Header.FrameRateHz:0.##} Hz game timing ({regionName})";
+                    if (!string.IsNullOrEmpty(audioError))
+                    {
+                        statusMessage += $" · {audioError}";
+                    }
+                }
+                catch (Exception exception) when (
+                    exception is IOException
+                        or InvalidDataException
+                        or ArgumentException
+                        or NotSupportedException)
+                {
+                    statusMessage = $"Could not start the compiled ROM: {exception.Message}";
+                }
+            }
+        }
 
         while (running)
         {

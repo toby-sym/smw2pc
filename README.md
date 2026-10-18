@@ -45,3 +45,17 @@ Run the core tests with:
 ```sh
 dotnet test Smw2Pc.sln
 ```
+
+## ROM-specific executable prototype
+
+On Windows, build a self-contained executable that starts directly in a local
+`.sfc` or `.smc` ROM with:
+
+```powershell
+.\tools\build-rom-exe.ps1 .\path\to\game.sfc
+```
+
+The output is `artifacts\rom-exe\Smw2Pc.Desktop.exe`. This first prototype
+embeds the ROM in the app and uses the current SNES hardware model and runtime
+65C816 translator. It does not yet statically recompile ROM instructions; that
+is the next step for this proof of concept.

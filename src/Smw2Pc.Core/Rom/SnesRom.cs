@@ -60,6 +60,18 @@ public sealed class SnesRom
         return Create(path, Path.GetFileName(path), File.ReadAllBytes(path));
     }
 
+    public static SnesRom LoadBytes(ReadOnlyMemory<byte> bytes, string fileName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+
+        if (bytes.Length > MaximumRomSize + CopierHeaderSize)
+        {
+            throw new InvalidDataException("The selected file is larger than the supported SNES ROM size.");
+        }
+
+        return Create(fileName, Path.GetFileName(fileName), bytes.ToArray());
+    }
+
     private static SnesRom LoadFromZip(string path)
     {
         using var archive = ZipFile.OpenRead(path);

@@ -30,4 +30,8 @@
     <ProjectReference Include="..\Smw2Pc.Core\Smw2Pc.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup Condition="'$(CompiledRomPath)' != ''">
+    <EmbeddedResource Include="$(CompiledRomPath)" LogicalName="Smw2Pc.Desktop.CompiledRom" />
+  </ItemGroup>
+
 </Project>
