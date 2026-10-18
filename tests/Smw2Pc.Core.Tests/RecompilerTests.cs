@@ -17,15 +17,15 @@ public sealed class RecompilerTests
     {
         var blocks = new List<DecodedCpuBlock>();
         foreach (var emulation in new[] { false, true })
-        foreach (var mode in new byte[] { 0, 0x10, 0x20, 0x30 })
-        {
-            if (emulation && mode != 0x30) continue;
-            for (var opcode = 0; opcode < 256; opcode++)
+            foreach (var mode in new byte[] { 0, 0x10, 0x20, 0x30 })
             {
-                var bus = new SnesMemoryBus(Rom([(byte)opcode, 0x20, 0x01, 0x00]));
-                blocks.Add(NativeBlockTranslator.Decode(bus, State(mode, emulation), 1));
+                if (emulation && mode != 0x30) continue;
+                for (var opcode = 0; opcode < 256; opcode++)
+                {
+                    var bus = new SnesMemoryBus(Rom([(byte)opcode, 0x20, 0x01, 0x00]));
+                    blocks.Add(NativeBlockTranslator.Decode(bus, State(mode, emulation), 1));
+                }
             }
-        }
         var lowerer = new OperationLowerer();
         var source = lowerer.EmitCpuMethods(blocks);
         Assert.IsFalse(source.Contains("CpuInstructionExecutor.Execute(", StringComparison.Ordinal));
@@ -92,9 +92,15 @@ public sealed class RecompilerTests
 
     private static CpuState State(byte mode, bool emulation) => new()
     {
-        ProgramCounter = 0x8000, Status = (byte)(mode | 0xC1), EmulationMode = emulation,
-        StackPointer = 0x01EF, DirectPage = 0x100, DataBank = 0x7E,
-        Accumulator = 0x42, X = 3, Y = 7,
+        ProgramCounter = 0x8000,
+        Status = (byte)(mode | 0xC1),
+        EmulationMode = emulation,
+        StackPointer = 0x01EF,
+        DirectPage = 0x100,
+        DataBank = 0x7E,
+        Accumulator = 0x42,
+        X = 3,
+        Y = 7,
     };
 
     private static SnesMemoryBus Bus()
