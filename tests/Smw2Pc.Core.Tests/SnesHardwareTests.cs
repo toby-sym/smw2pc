@@ -28,6 +28,36 @@ public sealed class SnesHardwareTests
     }
 
     [TestMethod]
+    public void HorizontalScrollWritesPreserveEveryFineScrollBitInBothDirections()
+    {
+        using var romFile = TemporaryRomFile.Create(CreateRomImage());
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        for (var background = 0; background < 4; background++)
+        {
+            var register = (uint)(0x00210D + (background * 2));
+            for (var step = 0; step < 2048; step++)
+            {
+                var offset = step < 1024 ? step : 2047 - step;
+                memoryBus.WriteByte(register, (byte)offset);
+                memoryBus.WriteByte(register, (byte)(offset >> 8));
+                Assert.AreEqual((ushort)offset, memoryBus.Hardware.GetBackgroundHorizontalOffset(background),
+                    $"BG{background + 1} scroll changed at offset {offset}.");
+            }
+        }
+    }
+
+    [TestMethod]
+    public void HorizontalScrollFineLatchIsSharedAcrossBackgroundsAndSurvivesVerticalWrites()
+    {
+        using var romFile = TemporaryRomFile.Create(CreateRomImage());
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        memoryBus.WriteByte(0x00210D, 0x05);
+        memoryBus.WriteByte(0x002110, 0xA8);
+        memoryBus.WriteByte(0x002111, 0x01);
+        Assert.AreEqual((ushort)0x1AD, memoryBus.Hardware.GetBackgroundHorizontalOffset(2));
+    }
+
+    [TestMethod]
     public void WramDataPortSharesStorageWithDirectWramMapping()
     {
         using var romFile = TemporaryRomFile.Create(CreateRomImage());
