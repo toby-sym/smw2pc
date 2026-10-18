@@ -20,8 +20,8 @@ internal sealed class OperationLowerer
         var cpu = ReadSyntax("CpuInstructionExecutor.cs");
         var execute = cpu.DescendantNodes().OfType<MethodDeclarationSyntax>().Single(m => m.Identifier.Text == "Execute");
         foreach (var section in execute.DescendantNodes().OfType<SwitchStatementSyntax>().First().Sections)
-        foreach (var label in section.Labels.OfType<CaseSwitchLabelSyntax>())
-            cpuCases.Add(Enum.Parse<CpuOperation>(((MemberAccessExpressionSyntax)label.Value).Name.Identifier.Text), section);
+            foreach (var label in section.Labels.OfType<CaseSwitchLabelSyntax>())
+                cpuCases.Add(Enum.Parse<CpuOperation>(((MemberAccessExpressionSyntax)label.Value).Name.Identifier.Text), section);
 
         var spc = ReadSyntax("Spc700Cpu.cs");
         branchBitMethod = spc.DescendantNodes().OfType<MethodDeclarationSyntax>().Single(m => m.Identifier.Text == "BranchOnDirectPageBit");
@@ -31,8 +31,8 @@ internal sealed class OperationLowerer
             if (method.Identifier.Text is not ("Step" or "TryExecuteAlu")) continue;
             var cases = method.Identifier.Text == "Step" ? spcCases : aluCases;
             foreach (var section in method.DescendantNodes().OfType<SwitchStatementSyntax>().First().Sections)
-            foreach (var label in section.Labels.OfType<CaseSwitchLabelSyntax>())
-                cases.Add(Convert.ToInt32(((LiteralExpressionSyntax)label.Value).Token.Value), section);
+                foreach (var label in section.Labels.OfType<CaseSwitchLabelSyntax>())
+                    cases.Add(Convert.ToInt32(((LiteralExpressionSyntax)label.Value).Token.Value), section);
         }
         foreach (var operation in Enum.GetValues<CpuOperation>())
             if (!cpuCases.ContainsKey(operation)) throw new InvalidDataException($"No semantics for {operation}.");
@@ -46,45 +46,45 @@ internal sealed class OperationLowerer
         var source = new StringBuilder("#pragma warning disable CS0219\nusing Smw2Pc.Core.Machine;\nnamespace Smw2Pc.Core.Cpu;\ninternal static partial class CpuInstructionExecutor\n{\n");
         var emitted = new HashSet<string>();
         foreach (var block in blocks)
-        foreach (var instruction in block.Instructions)
-        {
-            var name = MethodName(instruction, block.StatusMode, block.EmulationMode);
-            if (!emitted.Add(name)) continue;
-            var accumulator8 = block.EmulationMode || (block.StatusMode & 0x20) != 0;
-            var indexes8 = block.EmulationMode || (block.StatusMode & 0x10) != 0;
-            var replacements = new Dictionary<string, string>
+            foreach (var instruction in block.Instructions)
             {
-                ["operation"] = $"CpuOperation.{instruction.Operation}",
-                ["addressingMode"] = $"CpuAddressingMode.{instruction.AddressingMode}",
-            };
-            var body = RewriteStatements(cpuCases[instruction.Operation], replacements);
-            if (instruction.Operation.ToString().StartsWith("Branch", StringComparison.Ordinal)
-                && instruction.Operation is not CpuOperation.BranchLong)
-            {
-                var condition = instruction.Operation switch
+                var name = MethodName(instruction, block.StatusMode, block.EmulationMode);
+                if (!emitted.Add(name)) continue;
+                var accumulator8 = block.EmulationMode || (block.StatusMode & 0x20) != 0;
+                var indexes8 = block.EmulationMode || (block.StatusMode & 0x10) != 0;
+                var replacements = new Dictionary<string, string>
                 {
-                    CpuOperation.BranchPlus => "(state.Status & 0x80) == 0",
-                    CpuOperation.BranchMinus => "(state.Status & 0x80) != 0",
-                    CpuOperation.BranchOverflowClear => "(state.Status & 0x40) == 0",
-                    CpuOperation.BranchOverflowSet => "(state.Status & 0x40) != 0",
-                    CpuOperation.BranchCarryClear => "(state.Status & 0x01) == 0",
-                    CpuOperation.BranchCarrySet => "(state.Status & 0x01) != 0",
-                    CpuOperation.BranchNotEqual => "(state.Status & 0x02) == 0",
-                    CpuOperation.BranchEqual => "(state.Status & 0x02) != 0",
-                    _ => "true",
+                    ["operation"] = $"CpuOperation.{instruction.Operation}",
+                    ["addressingMode"] = $"CpuAddressingMode.{instruction.AddressingMode}",
                 };
-                body = body.Replace($"ShouldBranch(state, CpuOperation.{instruction.Operation})", $"({condition})", StringComparison.Ordinal);
+                var body = RewriteStatements(cpuCases[instruction.Operation], replacements);
+                if (instruction.Operation.ToString().StartsWith("Branch", StringComparison.Ordinal)
+                    && instruction.Operation is not CpuOperation.BranchLong)
+                {
+                    var condition = instruction.Operation switch
+                    {
+                        CpuOperation.BranchPlus => "(state.Status & 0x80) == 0",
+                        CpuOperation.BranchMinus => "(state.Status & 0x80) != 0",
+                        CpuOperation.BranchOverflowClear => "(state.Status & 0x40) == 0",
+                        CpuOperation.BranchOverflowSet => "(state.Status & 0x40) != 0",
+                        CpuOperation.BranchCarryClear => "(state.Status & 0x01) == 0",
+                        CpuOperation.BranchCarrySet => "(state.Status & 0x01) != 0",
+                        CpuOperation.BranchNotEqual => "(state.Status & 0x02) == 0",
+                        CpuOperation.BranchEqual => "(state.Status & 0x02) != 0",
+                        _ => "true",
+                    };
+                    body = body.Replace($"ShouldBranch(state, CpuOperation.{instruction.Operation})", $"({condition})", StringComparison.Ordinal);
+                }
+                source.AppendLine($"internal static void {name}(CpuState state, SnesMemoryBus memoryBus, uint operand, ushort nextProgramCounter)");
+                source.AppendLine("{");
+                source.AppendLine($"const bool accumulatorIs8Bit = {(accumulator8 ? "true" : "false")};");
+                source.AppendLine($"const bool indexesAre8Bit = {(indexes8 ? "true" : "false")};");
+                source.AppendLine($"const ushort accumulatorMask = 0x{(accumulator8 ? 0xFF : 0xFFFF):X4};");
+                source.AppendLine($"const ushort indexMask = 0x{(indexes8 ? 0xFF : 0xFFFF):X4};");
+                source.AppendLine("var accumulator = (ushort)(state.Accumulator & accumulatorMask);");
+                source.AppendLine(body);
+                source.AppendLine("}");
             }
-            source.AppendLine($"internal static void {name}(CpuState state, SnesMemoryBus memoryBus, uint operand, ushort nextProgramCounter)");
-            source.AppendLine("{");
-            source.AppendLine($"const bool accumulatorIs8Bit = {(accumulator8 ? "true" : "false")};");
-            source.AppendLine($"const bool indexesAre8Bit = {(indexes8 ? "true" : "false")};");
-            source.AppendLine($"const ushort accumulatorMask = 0x{(accumulator8 ? 0xFF : 0xFFFF):X4};");
-            source.AppendLine($"const ushort indexMask = 0x{(indexes8 ? 0xFF : 0xFFFF):X4};");
-            source.AppendLine("var accumulator = (ushort)(state.Accumulator & accumulatorMask);");
-            source.AppendLine(body);
-            source.AppendLine("}");
-        }
         return source.AppendLine("}").ToString();
     }
 

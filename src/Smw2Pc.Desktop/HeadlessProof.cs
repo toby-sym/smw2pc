@@ -76,13 +76,25 @@ internal static class HeadlessProof
                 final ??= ProofPlayback.Capture(runner, profile.Frames);
                 if (screenshot is not null) WriteBitmap(screenshot, bus.Hardware);
                 Console.WriteLine($"{profile.Name}: {profile.Frames} frames, {checkpoints.Count} matching checkpoints, game mode ${final.GameMode:X2}, {runner.CompiledInstructionsExecuted:N0} compiled main instructions, {bus.Hardware.Apu.TranslatedInstructionsExecuted:N0} compiled audio instructions.");
-                outcomes.Add(new { profile.Name, profile.Frames, MatchingCheckpoints = checkpoints.Count,
+                outcomes.Add(new
+                {
+                    profile.Name,
+                    profile.Frames,
+                    MatchingCheckpoints = checkpoints.Count,
                     CompiledMainInstructions = runner.CompiledInstructionsExecuted,
                     CompiledAudioInstructions = bus.Hardware.Apu.TranslatedInstructionsExecuted,
-                    Final = final });
+                    Final = final
+                });
             }
-            var json = JsonSerializer.Serialize(new { rom.Sha256, Recompiled = NativeCpuRunner.IsRecompiled,
-                Verified = verify, RuntimeCompilerFallbacks = 0, ElapsedSeconds = watch.Elapsed.TotalSeconds, Profiles = outcomes },
+            var json = JsonSerializer.Serialize(new
+            {
+                rom.Sha256,
+                Recompiled = NativeCpuRunner.IsRecompiled,
+                Verified = verify,
+                RuntimeCompilerFallbacks = 0,
+                ElapsedSeconds = watch.Elapsed.TotalSeconds,
+                Profiles = outcomes
+            },
                 new JsonSerializerOptions { WriteIndented = true });
             if (report is not null)
             {
