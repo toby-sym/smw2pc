@@ -43,6 +43,8 @@ internal sealed class CodeDiscovery(SnesRom rom)
             if (vector >= 0xFFF0) Enqueue(target, 0x30, true);
             else AllModes(target, includeEmulation: false);
         }
+        foreach (var table in dispatchers.StaticPointerTables)
+            ExpandTable(table.Address, table.Width, 0x30, emulation: true, table.EntryCount);
 
         while (pending.TryDequeue(out var key))
         {
@@ -145,7 +147,7 @@ internal sealed class CodeDiscovery(SnesRom rom)
         }
     }
 
-    private int ExpandTable(uint table, int width, byte mode, bool emulation)
+    private int ExpandTable(uint table, int width, byte mode, bool emulation, int maximumEntries = 256)
     {
         if (!bus.IsCartridgeRomAddress(table)) return 0;
         var bank = table & 0xFF0000;
@@ -153,7 +155,7 @@ internal sealed class CodeDiscovery(SnesRom rom)
         // The nearest forward target bounds a table followed by its code. Otherwise
         // stop at an invalid pointer or the 256-entry cap; record the inference.
         var count = 0;
-        for (var index = 0; index < 256; index++)
+        for (var index = 0; index < maximumEntries; index++)
         {
             var entry = table + (uint)(index * width);
             if (entry + width > boundary || (entry & 0xFFFF) + width > 0x10000) break;

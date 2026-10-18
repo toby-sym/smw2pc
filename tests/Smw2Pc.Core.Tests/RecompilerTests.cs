@@ -82,6 +82,45 @@ public sealed class RecompilerTests
     }
 
     [TestMethod]
+    public void StaticDiscoveryIncludesHandlersFromSmwBankedRoutineTable()
+    {
+        var program = new byte[0x80000];
+        const int tableOffset = 0x0D * 0x8000 + (0xA13F - 0x8000);
+        for (var index = 0; index < 240; index++)
+        {
+            var target = index switch
+            {
+                7 => 0x0DA64D,
+                54 => 0x0DA68E,
+                _ => 0x0DA57B,
+            };
+            var entryOffset = tableOffset + (index * 3);
+            program[entryOffset] = (byte)target;
+            program[entryOffset + 1] = (byte)(target >> 8);
+            program[entryOffset + 2] = (byte)(target >> 16);
+        }
+        program[tableOffset + (240 * 3)] = 0xE2;
+        program[tableOffset + (240 * 3) + 1] = 0x30;
+        program[tableOffset + (240 * 3) + 2] = 0x20;
+        program[0x0D * 0x8000 + (0xA68E - 0x8000)] = 0xDB;
+
+        var rom = Rom(program);
+        var discovery = new CodeDiscovery(rom);
+        discovery.Analyze();
+
+        Assert.IsTrue(discovery.Blocks.Any(block => block.StartAddress == 0x0DA68E));
+        Assert.Contains("$0DA13F: 240 contiguous 3-byte ROM pointers", discovery.InferredPointerTables);
+
+        var blocks = discovery.Blocks;
+        var assembly = Compile(new OperationLowerer().EmitCpuMethods(blocks), RomEmitter.EmitMain(rom, blocks));
+        var execute = assembly.GetType("Smw2Pc.Core.Cpu.CompiledRomProgram")!
+            .GetMethod("Execute", BindingFlags.Public | BindingFlags.Static)!;
+        var state = new CpuState { ProgramBank = 0x0D, ProgramCounter = 0xA68E, Status = 0x30, EmulationMode = true };
+        Assert.AreEqual(1, execute.Invoke(null, [state, new SnesMemoryBus(rom), 1]));
+        Assert.IsTrue(state.Halted);
+    }
+
+    [TestMethod]
     public void CompiledBlocksHonorBudgetsAndMirrorsAndRejectChangedRamCode()
     {
         var rom = Rom([0xA9, 0x11, 0x8D, 0x00, 0x02, 0xA9, 0x22, 0xDB]);
@@ -186,7 +225,7 @@ public sealed class RecompilerTests
 
     private static SnesRom Rom(byte[] program)
     {
-        var data = new byte[0x8000];
+        var data = new byte[Math.Max(0x8000, program.Length)];
         program.CopyTo(data, 0);
         System.Text.Encoding.ASCII.GetBytes("RECOMPILER TEST       ").CopyTo(data, 0x7FC0);
         data[0x7FD5] = 0x20; data[0x7FDC] = 0xFF; data[0x7FDD] = 0xFF;
