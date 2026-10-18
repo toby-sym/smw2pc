@@ -56,6 +56,7 @@ public sealed class SnesHardware
     private bool colorRamHighByte;
     private bool objectAttributeHighByte;
     private byte backgroundOffsetLatch;
+    private byte horizontalBackgroundOffsetLatch;
     private bool controllerStrobe;
     private bool inVBlank;
     private bool hdmaFrameStarted;
@@ -770,9 +771,12 @@ public sealed class SnesHardware
         }
         else
         {
-            var previousFineScroll = (backgroundHorizontalOffsets[background] >> 8) & 0x07;
-            var offset = (value << 8) | (backgroundOffsetLatch & 0xF8) | previousFineScroll;
+            // PPU2 keeps a separate latch for the low three horizontal scroll bits.
+            // Reading them back from the masked 10-bit register loses bit 2 during
+            // the first write and makes a continuous camera jump backward every 4px.
+            var offset = (value << 8) | (backgroundOffsetLatch & 0xF8) | (horizontalBackgroundOffsetLatch & 0x07);
             backgroundHorizontalOffsets[background] = (ushort)(offset & 0x03FF);
+            horizontalBackgroundOffsetLatch = value;
         }
 
         backgroundOffsetLatch = value;
