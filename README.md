@@ -17,9 +17,11 @@ identity and displays the SNES video output. Use the arrow keys to move,
 **A/S** for Y/X, and **Q/W** for L/R. Press **F1** to open another ROM.
 
 Resize the window directly or open **Settings** with **F2** to choose a window
-size, aspect ratio, and smooth or sharp scaling. The render cap can be adjusted
-from 15 to 240 FPS. These options affect presentation only: game logic continues
-at the ROM's native PAL or NTSC rate. Settings are saved between launches.
+size and aspect ratio. Game pixels use sharp nearest-neighbor scaling; camera
+and object positions are interpolated between emulated frames. The render cap
+can be adjusted from 15 to 240 FPS. These options affect presentation only:
+game logic continues at the ROM's native PAL or NTSC rate. Settings are saved
+between launches.
 
 The player executes generated host methods for 65C816 and SPC700 instructions.
 It does not translate or interpret CPU opcodes at runtime. Its strict dispatch

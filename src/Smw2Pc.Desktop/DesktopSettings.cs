@@ -31,8 +31,6 @@ internal sealed class DesktopSettings
 
     public int RenderFrameRate { get; set; } = 60;
 
-    public bool SmoothScaling { get; set; } = true;
-
     public SDL.Keycode MoveLeftKey { get; set; } = SDL.Keycode.Left;
 
     public SDL.Keycode MoveRightKey { get; set; } = SDL.Keycode.Right;
