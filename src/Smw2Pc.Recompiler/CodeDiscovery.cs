@@ -7,10 +7,13 @@ namespace Smw2Pc.Recompiler;
 internal sealed class CodeDiscovery(SnesRom rom)
 {
     private readonly SnesMemoryBus bus = new(rom);
+    private readonly SmwDispatchTables dispatchers = new(rom);
     private readonly Dictionary<string, DecodedCpuBlock> blocks = [];
     private readonly Queue<(uint Address, byte Mode, bool Emulation)> pending = new();
     private readonly HashSet<(uint Address, byte Mode, bool Emulation)> visited = [];
     public HashSet<string> UnresolvedTransfers { get; } = [];
+    public HashSet<string> InferredPointerTables { get; } = [];
+    public int RecognizedSmwDispatchers => dispatchers.RecognizedHelpers;
     public IReadOnlyList<DecodedCpuBlock> Blocks => blocks.Values
         .OrderBy(b => b.StartAddress).ThenBy(b => b.StatusMode).ThenBy(b => b.EmulationMode)
         .ThenBy(b => Convert.ToHexString(b.SourceBytes)).ToArray();
@@ -81,7 +84,11 @@ internal sealed class CodeDiscovery(SnesRom rom)
                 case CpuOperation.CallAbsolute:
                     Next(bank | (ushort)last.Operand); Next(next); break;
                 case CpuOperation.CallLong:
-                    Next(last.Operand); Next(next); break;
+                    Next(last.Operand);
+                    var width = dispatchers.PointerWidth(bus.CanonicalCodeAddress(last.Operand));
+                    if (width != 0) ExpandTable(next, width, 0x30, emulation);
+                    else Next(next);
+                    break;
                 case CpuOperation.BranchAlways:
                     Next(bank | unchecked((ushort)(last.NextProgramCounter + (sbyte)last.Operand))); break;
                 case CpuOperation.BranchLong:
@@ -101,23 +108,64 @@ internal sealed class CodeDiscovery(SnesRom rom)
                 case CpuOperation.SetStatusBits:
                     Enqueue(next, (byte)(mode | ((byte)last.Operand & 0x30)), emulation); break;
                 case CpuOperation.PullStatus:
-                    AllModes(next, includeEmulation: emulation); break;
+                    if (emulation) Enqueue(next, 0x30, true);
+                    else AllModes(next, includeEmulation: false);
+                    break;
                 case CpuOperation.ExchangeCarryAndEmulation:
-                    AllModes(next); break;
+                    var preceding = block.Instructions.Count > 1 ? block.Instructions[^2].Operation : (CpuOperation?)null;
+                    if (preceding == CpuOperation.ClearCarry) Enqueue(next, mode, false);
+                    else if (preceding == CpuOperation.SetCarry) Enqueue(next, 0x30, true);
+                    else AllModes(next);
+                    break;
                 case CpuOperation.CallAbsoluteIndexedIndirect:
                     Next(next);
-                    goto case CpuOperation.JumpIndirect;
-                case CpuOperation.JumpIndirect:
+                    goto case CpuOperation.JumpAbsoluteIndexedIndirect;
                 case CpuOperation.JumpAbsoluteIndexedIndirect:
+                    if (ExpandTable(bank | (ushort)last.Operand, 2, mode, emulation) == 0)
+                        UnresolvedTransfers.Add($"${block.StartAddress:X6}: {last.Operation} (RAM or unbounded table)");
+                    break;
+                case CpuOperation.JumpIndirect:
+                    if (bus.IsCartridgeRomAddress((ushort)last.Operand))
+                        Next(bank | bus.ReadWordInBank((ushort)last.Operand));
+                    else UnresolvedTransfers.Add($"${block.StartAddress:X6}: {last.Operation} (mutable pointer)");
+                    break;
                 case CpuOperation.JumpIndirectLong:
-                    UnresolvedTransfers.Add($"${block.StartAddress:X6}: {last.Operation} (runtime target, profiled separately)");
+                    if (last.Operand >= 0x8000 && last.Operand <= 0xFFFD)
+                        Next((uint)(bus.PeekCodeByte(last.Operand) | bus.PeekCodeByte(last.Operand + 1) << 8
+                            | bus.PeekCodeByte(last.Operand + 2) << 16));
+                    else UnresolvedTransfers.Add($"${block.StartAddress:X6}: {last.Operation} (mutable pointer)");
                     break;
                 case CpuOperation.Break:
                 case CpuOperation.Cop:
-                    AllModes(next); break;
+                    // Interrupt vectors were seeded above. A software interrupt does
+                    // not provide a normal fallthrough edge into following bytes.
+                    break;
                 default: Next(next); break;
             }
         }
+    }
+
+    private int ExpandTable(uint table, int width, byte mode, bool emulation)
+    {
+        if (!bus.IsCartridgeRomAddress(table)) return 0;
+        var bank = table & 0xFF0000;
+        var boundary = bank + 0x10000u;
+        // The nearest forward target bounds a table followed by its code. Otherwise
+        // stop at an invalid pointer or the 256-entry cap; record the inference.
+        var count = 0;
+        for (var index = 0; index < 256; index++)
+        {
+            var entry = table + (uint)(index * width);
+            if (entry + width > boundary || (entry & 0xFFFF) + width > 0x10000) break;
+            uint target = (uint)(bus.PeekCodeByte(entry) | bus.PeekCodeByte(entry + 1) << 8);
+            target |= width == 3 ? (uint)bus.PeekCodeByte(entry + 2) << 16 : bank;
+            if (!bus.IsCartridgeRomAddress(target) || target == 0xFFFFFF || target >= table && target < entry + width) break;
+            if (target > table && (target & 0xFF0000) == bank) boundary = Math.Min(boundary, target);
+            Enqueue(target, mode, emulation);
+            count++;
+        }
+        if (count != 0) InferredPointerTables.Add($"${table:X6}: {count} contiguous {width}-byte ROM pointers");
+        return count;
     }
 
     private void AllModes(uint address, bool includeEmulation = true)

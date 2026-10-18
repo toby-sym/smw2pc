@@ -55,6 +55,8 @@ try
         AudioEntries = recorder.AudioEntries.Count,
         RuntimeCompilerIncluded = false,
         InterpreterFallbackIncluded = false,
+        discovery.RecognizedSmwDispatchers,
+        InferredPointerTables = discovery.InferredPointerTables.Order().ToArray(),
         UnresolvedStaticTransfers = discovery.UnresolvedTransfers.Order().ToArray(),
         CoverageNote = "Static closure plus recorded execution paths. Strict player rejects uncompiled code; this is not a whole-game coverage guarantee.",
     }, json));

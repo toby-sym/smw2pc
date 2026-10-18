@@ -107,7 +107,7 @@ internal sealed class OperationLowerer
             source.AppendLine("ProgramCounter++; extraCycles = 0;");
             // The original case bodies use break to leave their switch.
             source.AppendLine("do {");
-            source.AppendLine(RewriteStatements(section, replacements));
+            source.AppendLine(RewriteStatements(section, replacements, isAlu ? family : null));
             source.AppendLine("} while (false);");
             source.AppendLine($"return BaseCycles[0x{opcode:X2}] + extraCycles;");
             source.AppendLine("}");
@@ -132,9 +132,9 @@ internal sealed class OperationLowerer
         return source.AppendLine("}").ToString();
     }
 
-    private static string RewriteStatements(SwitchSectionSyntax section, Dictionary<string, string> replacements)
+    private static string RewriteStatements(SwitchSectionSyntax section, Dictionary<string, string> replacements, int? aluFamily = null)
     {
-        var rewriter = new ConstantSubstitution(replacements);
+        var rewriter = new ConstantSubstitution(replacements, aluFamily);
         return string.Join(Environment.NewLine, section.Statements.Select(s => rewriter.Visit(s)!.NormalizeWhitespace().ToFullString()));
     }
 
@@ -146,10 +146,17 @@ internal sealed class OperationLowerer
         return CSharpSyntaxTree.ParseText(reader.ReadToEnd()).GetRoot();
     }
 
-    private sealed class ConstantSubstitution(Dictionary<string, string> replacements) : CSharpSyntaxRewriter
+    private sealed class ConstantSubstitution(Dictionary<string, string> replacements, int? aluFamily = null) : CSharpSyntaxRewriter
     {
         public override SyntaxNode? VisitIdentifierName(IdentifierNameSyntax node)
             => replacements.TryGetValue(node.Identifier.Text, out var expression)
                 ? SyntaxFactory.ParseExpression(expression).WithTriviaFrom(node) : base.VisitIdentifierName(node);
+
+        public override SyntaxNode? VisitIfStatement(IfStatementSyntax node)
+        {
+            if (aluFamily.HasValue && node.Condition.ToString() == "operation == AluOperation.Compare")
+                return Visit(aluFamily.Value == 0x60 ? node.Statement : node.Else?.Statement ?? SyntaxFactory.EmptyStatement());
+            return base.VisitIfStatement(node);
+        }
     }
 }

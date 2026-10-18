@@ -17,15 +17,15 @@ public sealed class RecompilerTests
     {
         var blocks = new List<DecodedCpuBlock>();
         foreach (var emulation in new[] { false, true })
-        foreach (var mode in new byte[] { 0, 0x10, 0x20, 0x30 })
-        {
-            if (emulation && mode != 0x30) continue;
-            for (var opcode = 0; opcode < 256; opcode++)
+            foreach (var mode in new byte[] { 0, 0x10, 0x20, 0x30 })
             {
-                var bus = new SnesMemoryBus(Rom([(byte)opcode, 0x20, 0x01, 0x00]));
-                blocks.Add(NativeBlockTranslator.Decode(bus, State(mode, emulation), 1));
+                if (emulation && mode != 0x30) continue;
+                for (var opcode = 0; opcode < 256; opcode++)
+                {
+                    var bus = new SnesMemoryBus(Rom([(byte)opcode, 0x20, 0x01, 0x00]));
+                    blocks.Add(NativeBlockTranslator.Decode(bus, State(mode, emulation), 1));
+                }
             }
-        }
         var lowerer = new OperationLowerer();
         var source = lowerer.EmitCpuMethods(blocks);
         Assert.IsFalse(source.Contains("CpuInstructionExecutor.Execute(", StringComparison.Ordinal));
@@ -66,7 +66,81 @@ public sealed class RecompilerTests
         Assert.IsFalse(discovery.Blocks.Any(b => b.StartAddress == 0x008100));
     }
 
-    private static Assembly Compile(string generated)
+    [TestMethod]
+    public void SmwInlineDispatcherFindsTargetsAndDoesNotDecodeThePointerTableAsCode()
+    {
+        var program = new byte[0x800];
+        new byte[] { 0x18, 0xFB, 0x22, 0xDF, 0x86, 0x00, 0x10, 0x80, 0x20, 0x80 }.CopyTo(program, 0);
+        program[0x10] = 0xDB; program[0x20] = 0xDB;
+        Convert.FromHexString("84037A8400C23029FF000AA8688501C8B7008500E230A403DC0000").CopyTo(program, 0x6DF);
+        var discovery = new CodeDiscovery(Rom(program));
+        discovery.Analyze();
+        Assert.AreEqual(1, discovery.RecognizedSmwDispatchers);
+        Assert.IsTrue(discovery.Blocks.Any(b => b.StartAddress == 0x8010));
+        Assert.IsTrue(discovery.Blocks.Any(b => b.StartAddress == 0x8020));
+        Assert.IsFalse(discovery.Blocks.Any(b => b.StartAddress == 0x8006));
+    }
+
+    [TestMethod]
+    public void CompiledBlocksHonorBudgetsAndMirrorsAndRejectChangedRamCode()
+    {
+        var rom = Rom([0xA9, 0x11, 0x8D, 0x00, 0x02, 0xA9, 0x22, 0xDB]);
+        var discovery = new CodeDiscovery(rom);
+        var ramBus = new SnesMemoryBus(rom);
+        ramBus.WriteByte(0x7E0100, 0xA9); ramBus.WriteByte(0x7E0101, 0x77);
+        var ramState = new CpuState { ProgramBank = 0x7E, ProgramCounter = 0x0100, Status = 0x30 };
+        discovery.AddObserved(NativeBlockTranslator.Decode(ramBus, ramState, 1));
+        discovery.Analyze();
+        var blocks = discovery.Blocks;
+        var assembly = Compile(new OperationLowerer().EmitCpuMethods(blocks), RomEmitter.EmitMain(rom, blocks));
+        var execute = assembly.GetType("Smw2Pc.Core.Cpu.CompiledRomProgram")!.GetMethod("Execute", BindingFlags.Public | BindingFlags.Static)!;
+        foreach (var bank in new byte[] { 0, 0x80 })
+        {
+            var reference = new NativeCpuRunner(new SnesMemoryBus(rom));
+            var compiled = new NativeCpuRunner(new SnesMemoryBus(rom));
+            reference.State.ProgramBank = bank; compiled.State.ProgramBank = bank;
+            for (var step = 0; step < 4; step++)
+            {
+                reference.Run(1);
+                var count = (int)execute.Invoke(null, [compiled.State, compiled.MemoryBus, 1])!;
+                Assert.AreEqual(1, count);
+                compiled.MemoryBus.Hardware.AdvanceCpuInstructions(compiled.MemoryBus, count);
+                Assert.AreEqual(ProofPlayback.Capture(reference, step).StateSha256, ProofPlayback.Capture(compiled, step).StateSha256);
+            }
+        }
+        Assert.AreEqual(1, execute.Invoke(null, [ramState, ramBus, 32]));
+        Assert.AreEqual((ushort)0x77, ramState.Accumulator);
+        ramState.ProgramCounter = 0x0100;
+        ramBus.WriteByte(0x7E0101, 0x66);
+        var failure = Assert.ThrowsExactly<TargetInvocationException>(() => execute.Invoke(null, [ramState, ramBus, 32]));
+        Assert.IsInstanceOfType<MissingCompiledCodeException>(failure.InnerException);
+    }
+
+    [TestMethod]
+    public void CompiledExecutionResumesAcrossStaticBlockLimitWithMatchingHardwareTiming()
+    {
+        var program = Enumerable.Repeat((byte)0xEA, 40).Append((byte)0xDB).ToArray();
+        var rom = Rom(program);
+        var bus = new SnesMemoryBus(rom);
+        var state = new CpuState { ProgramBank = 0, ProgramCounter = 0x8000, Status = 0x30, EmulationMode = true };
+        var blocks = new List<DecodedCpuBlock> { NativeBlockTranslator.Decode(bus, state, 32) };
+        state.ProgramCounter = 0x8020;
+        blocks.Add(NativeBlockTranslator.Decode(bus, state, 16));
+        var assembly = Compile(new OperationLowerer().EmitCpuMethods(blocks), RomEmitter.EmitMain(rom, blocks));
+        var execute = assembly.GetType("Smw2Pc.Core.Cpu.CompiledRomProgram")!.GetMethod("Execute", BindingFlags.Public | BindingFlags.Static)!;
+        var reference = new NativeCpuRunner(new SnesMemoryBus(rom));
+        var compiled = new NativeCpuRunner(new SnesMemoryBus(rom));
+
+        Assert.AreEqual(7, execute.Invoke(null, [compiled.State, compiled.MemoryBus, 7]));
+        compiled.MemoryBus.Hardware.AdvanceCpuInstructions(compiled.MemoryBus, 7);
+        reference.Run(7);
+        Assert.AreEqual(32, execute.Invoke(null, [compiled.State, compiled.MemoryBus, 32]));
+        compiled.MemoryBus.Hardware.AdvanceCpuInstructions(compiled.MemoryBus, 32);
+        reference.Run(32);
+        Assert.AreEqual(ProofPlayback.Capture(reference, 1).StateSha256, ProofPlayback.Capture(compiled, 1).StateSha256);
+    }
+
+    private static Assembly Compile(params string[] generated)
     {
         var options = new CSharpParseOptions(preprocessorSymbols: ["SMW2PC_RECOMPILED"]);
         var resourceAssembly = typeof(OperationLowerer).Assembly;
@@ -77,8 +151,8 @@ public sealed class RecompilerTests
             using var reader = new StreamReader(stream);
             trees.Add(CSharpSyntaxTree.ParseText(reader.ReadToEnd(), options));
         }
-        trees.Add(CSharpSyntaxTree.ParseText("global using System;\nglobal using System.Collections.Generic;\nglobal using System.Linq;"));
-        trees.Add(CSharpSyntaxTree.ParseText(generated, options));
+        trees.Add(CSharpSyntaxTree.ParseText("global using System;\nglobal using System.IO;\nglobal using System.Collections.Generic;\nglobal using System.Linq;"));
+        trees.AddRange(generated.Select(source => CSharpSyntaxTree.ParseText(source, options)));
         var paths = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator)
             .Append(typeof(CpuState).Assembly.Location).Distinct(StringComparer.OrdinalIgnoreCase);
         var compilation = CSharpCompilation.Create("TranslatedSemantics_" + Guid.NewGuid().ToString("N"), trees,
@@ -92,9 +166,15 @@ public sealed class RecompilerTests
 
     private static CpuState State(byte mode, bool emulation) => new()
     {
-        ProgramCounter = 0x8000, Status = (byte)(mode | 0xC1), EmulationMode = emulation,
-        StackPointer = 0x01EF, DirectPage = 0x100, DataBank = 0x7E,
-        Accumulator = 0x42, X = 3, Y = 7,
+        ProgramCounter = 0x8000,
+        Status = (byte)(mode | 0xC1),
+        EmulationMode = emulation,
+        StackPointer = 0x01EF,
+        DirectPage = 0x100,
+        DataBank = 0x7E,
+        Accumulator = 0x42,
+        X = 3,
+        Y = 7,
     };
 
     private static SnesMemoryBus Bus()
