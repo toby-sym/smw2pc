@@ -2,10 +2,11 @@ using Smw2Pc.Core.Machine;
 
 namespace Smw2Pc.Core.Cpu;
 
-internal static class CpuInstructionExecutor
+internal static partial class CpuInstructionExecutor
 {
     private const ushort ByteMask = 0x00FF;
 
+#if !SMW2PC_RECOMPILED
     public static void Execute(
         CpuState state,
         SnesMemoryBus memoryBus,
@@ -364,6 +365,8 @@ internal static class CpuInstructionExecutor
                 throw new ArgumentOutOfRangeException(nameof(operation), operation, "Unsupported CPU operation.");
         }
     }
+
+#endif
 
     private static ushort ReadOperand(
         CpuState state,

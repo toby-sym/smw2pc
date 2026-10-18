@@ -4,10 +4,12 @@ using System.Runtime.InteropServices;
 using SDL3;
 using Smw2Pc.Core.Cpu;
 using Smw2Pc.Core.Machine;
+using Smw2Pc.Core.Recompilation;
 using Smw2Pc.Core.Rom;
 
 internal static class Program
 {
+    private const string CompiledRomResourceName = "Smw2Pc.Desktop.CompiledRom";
     private const int InstructionsPerFrame = 18000;
     private const int MaximumCatchUpFrames = 5;
     private static readonly long SettingsSaveDelayTicks = Stopwatch.Frequency / 2;
@@ -63,8 +65,16 @@ internal static class Program
         new(GameAction.R, "R", "Shoulder"),
     ];
 
-    private static int Main()
+    private static int Main(string[] args)
     {
+        if (args.Contains("--verify-native")) return NativeDependencyProof.Run();
+        if (!NativeCpuRunner.IsRecompiled)
+        {
+            Console.Error.WriteLine("The desktop player requires a ROM-specific compiled build. Run tools/build-rom-exe.ps1 with the target ROM.");
+            return 2;
+        }
+        if (args.Contains("--verify") || args.Contains("--headless"))
+            return HeadlessProof.Run(args);
         var settings = DesktopSettings.Load();
         if (!SDL.Init(SDL.InitFlags.Video))
         {
@@ -104,7 +114,7 @@ internal static class Program
 
         var textRenderer = UiTextRenderer.TryCreate(
             renderer,
-            Path.Combine(AppContext.BaseDirectory, "assets", "fonts", "Inter-Variable.ttf"));
+            BundledAssets.GetFontPath());
 
         SDL.SetTextureScaleMode(gameTexture, GetScaleMode(settings));
         var verticalSyncEnabled = SDL.SetRenderVSync(renderer, 1);
@@ -158,6 +168,39 @@ internal static class Program
         GameAction? rebindingAction = null;
         var settingsSavePending = false;
         var settingsSaveTimestamp = 0L;
+
+        using (var compiledRomStream = typeof(Program).Assembly.GetManifestResourceStream(CompiledRomResourceName))
+        {
+            if (compiledRomStream is not null)
+            {
+                try
+                {
+                    using var romBuffer = new MemoryStream();
+                    compiledRomStream.CopyTo(romBuffer);
+                    loadedRom = SnesRom.LoadBytes(romBuffer.ToArray(), "compiled.sfc");
+                    var memoryBus = new SnesMemoryBus(loadedRom);
+                    cpuRunner = new NativeCpuRunner(memoryBus);
+                    memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
+                    frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
+                    previousTimestamp = Stopwatch.GetTimestamp();
+                    nextPresentationTimestamp = previousTimestamp;
+                    var regionName = loadedRom.Header.IsPalRegion ? "PAL" : "NTSC";
+                    statusMessage = $"Running compiled {loadedRom.Header.Title} · {loadedRom.Header.FrameRateHz:0.##} Hz game timing ({regionName})";
+                    if (!string.IsNullOrEmpty(audioError))
+                    {
+                        statusMessage += $" · {audioError}";
+                    }
+                }
+                catch (Exception exception) when (
+                    exception is IOException
+                        or InvalidDataException
+                        or ArgumentException
+                        or NotSupportedException)
+                {
+                    statusMessage = $"Could not start the compiled ROM: {exception.Message}";
+                }
+            }
+        }
 
         while (running)
         {
@@ -366,6 +409,10 @@ internal static class Program
                 catch (Exception exception) when (exception is NotSupportedException or InvalidOperationException)
                 {
                     statusMessage = $"Execution stopped at {cpuRunner.State.ProgramBank:X2}:{cpuRunner.State.ProgramCounter:X4}: {exception.Message}";
+                    if (exception is MissingCompiledCodeException)
+                    {
+                        RecordExecutionFailure(exception, cpuRunner);
+                    }
                     cpuRunner = null;
                     frameAccumulator = 0;
                 }
@@ -1178,6 +1225,34 @@ internal static class Program
             && x < rectangle.X + rectangle.W
             && y >= rectangle.Y
             && y < rectangle.Y + rectangle.H;
+    }
+
+    private static void RecordExecutionFailure(Exception exception, NativeCpuRunner runner)
+    {
+        try
+        {
+            var state = runner.State;
+            var logDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SMW2PC");
+            Directory.CreateDirectory(logDirectory);
+            var logPath = Path.Combine(logDirectory, "execution-errors.log");
+            File.AppendAllText(logPath,
+                $"[{DateTimeOffset.Now:O}] ROM execution stopped\n"
+                + $"CPU={state.ProgramBank:X2}:{state.ProgramCounter:X4} A={state.Accumulator:X4} "
+                + $"X={state.X:X4} Y={state.Y:X4} S={state.StackPointer:X4} D={state.DirectPage:X4} "
+                + $"DB={state.DataBank:X2} P={state.Status:X2} E={state.EmulationMode}\n"
+                + $"GameMode=${runner.MemoryBus.ReadByte(0x7E0100):X2} "
+                + $"Level=${runner.MemoryBus.ReadByte(0x7E13BF):X2}\n"
+                + exception + Environment.NewLine + Environment.NewLine);
+        }
+        catch (IOException)
+        {
+            // Keep the on-screen execution error available if local logging fails.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Keep the on-screen execution error available if local logging fails.
+        }
     }
 
     private sealed record FileDialogResult(string? Path, string? Error);

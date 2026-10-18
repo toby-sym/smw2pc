@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Smw2Pc.Core.Rom;
@@ -21,6 +22,7 @@ public sealed class SnesRom
         SourcePath = sourcePath;
         FileName = fileName;
         this.data = data;
+        Sha256 = Convert.ToHexString(SHA256.HashData(data));
         HasCopierHeader = hasCopierHeader;
         Header = header;
     }
@@ -36,6 +38,8 @@ public sealed class SnesRom
     public bool HasCopierHeader { get; }
 
     public SnesRomHeader Header { get; }
+
+    public string Sha256 { get; }
 
     public static SnesRom Load(string path)
     {
@@ -58,6 +62,18 @@ public sealed class SnesRom
         }
 
         return Create(path, Path.GetFileName(path), File.ReadAllBytes(path));
+    }
+
+    public static SnesRom LoadBytes(ReadOnlyMemory<byte> bytes, string fileName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+
+        if (bytes.Length > MaximumRomSize + CopierHeaderSize)
+        {
+            throw new InvalidDataException("The selected file is larger than the supported SNES ROM size.");
+        }
+
+        return Create(fileName, Path.GetFileName(fileName), bytes.ToArray());
     }
 
     private static SnesRom LoadFromZip(string path)

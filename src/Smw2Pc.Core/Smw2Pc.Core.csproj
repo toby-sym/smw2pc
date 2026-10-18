@@ -10,4 +10,13 @@
     <Optimize>true</Optimize>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(RecompiledSourceDirectory)' != ''">
+    <DefineConstants>$(DefineConstants);SMW2PC_RECOMPILED</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(RecompiledSourceDirectory)' != ''">
+    <Compile Remove="Cpu\NativeBlockTranslator.cs" />
+    <Compile Include="$(RecompiledSourceDirectory)\*.cs" />
+  </ItemGroup>
+
 </Project>

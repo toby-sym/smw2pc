@@ -28,6 +28,20 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Smw2Pc.Core\Smw2Pc.Core.csproj" />
+    <EmbeddedResource Include="..\..\assets\fonts\Inter-Variable.ttf" LogicalName="Smw2Pc.Desktop.Font" />
   </ItemGroup>
+
+  <ItemGroup Condition="'$(CompiledRomPath)' != ''">
+    <EmbeddedResource Include="$(CompiledRomPath)" LogicalName="Smw2Pc.Desktop.CompiledRom" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RecompiledSourceDirectory)' != ''">
+    <EmbeddedResource Include="$(RecompiledSourceDirectory)\proof.json" LogicalName="Smw2Pc.Desktop.RecompilationProof" />
+    <EmbeddedResource Include="$(RecompiledSourceDirectory)\manifest.json" LogicalName="Smw2Pc.Desktop.RecompilationManifest" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="'$(RecompiledSourceDirectory)' != ''">
+    <AssemblyName>SMW2PC.Recompiled</AssemblyName>
+  </PropertyGroup>
 
 </Project>

@@ -4,13 +4,19 @@ public sealed class NativeCpuRunner
 {
     private const int MaximumBlockSize = 32;
 
+#if !SMW2PC_RECOMPILED
     private readonly NativeBlockTranslator translator = new();
     private readonly Dictionary<TranslationKey, NativeCpuBlock> translatedBlocks = [];
+    internal Action<DecodedCpuBlock>? BlockDiscovered { get; set; }
+#endif
 
     public NativeCpuRunner(Machine.SnesMemoryBus memoryBus)
     {
         ArgumentNullException.ThrowIfNull(memoryBus);
         MemoryBus = memoryBus;
+#if SMW2PC_RECOMPILED
+        CompiledRomProgram.ValidateRom(memoryBus.Rom);
+#endif
         State = CpuState.CreateResetState(memoryBus);
     }
 
@@ -18,7 +24,21 @@ public sealed class NativeCpuRunner
 
     public CpuState State { get; }
 
-    public int CachedBlockCount => translatedBlocks.Count;
+    public int CachedBlockCount =>
+#if SMW2PC_RECOMPILED
+        0;
+#else
+        translatedBlocks.Count;
+#endif
+
+    public long CompiledInstructionsExecuted { get; private set; }
+
+    public static bool IsRecompiled =>
+#if SMW2PC_RECOMPILED
+        true;
+#else
+        false;
+#endif
 
     public int Run(int instructionBudget)
     {
@@ -40,32 +60,40 @@ public sealed class NativeCpuRunner
             }
 
             var blockSize = Math.Min(MaximumBlockSize, instructionBudget - instructionsExecuted);
+#if SMW2PC_RECOMPILED
+            var executed = CompiledRomProgram.Execute(State, MemoryBus, blockSize);
+            CompiledInstructionsExecuted += executed;
+#else
             var block = GetOrTranslateBlock(blockSize);
             block.Execute(State, MemoryBus);
-            MemoryBus.Hardware.AdvanceCpuInstructions(MemoryBus, block.InstructionCount);
+            var executed = block.InstructionCount;
+#endif
+            MemoryBus.Hardware.AdvanceCpuInstructions(MemoryBus, executed);
             if (MemoryBus.Hardware.ConsumeNmiRequest())
             {
                 EnterNmi();
             }
 
-            instructionsExecuted += block.InstructionCount;
+            instructionsExecuted += executed;
         }
 
         return instructionsExecuted;
     }
 
+#if !SMW2PC_RECOMPILED
     private NativeCpuBlock GetOrTranslateBlock(int maximumInstructions)
     {
         var address = ((uint)State.ProgramBank << 16) | State.ProgramCounter;
+        uint signature = 0;
         if (!MemoryBus.IsCartridgeRomAddress(address))
         {
-            // WRAM can contain code copied from the cartridge and can be rewritten at runtime.
-            // Translate one instruction at a time so each fetch sees current memory contents.
-            return translator.Translate(MemoryBus, State, 1);
+            maximumInstructions = 1;
+            for (var offset = 0; offset < 4; offset++)
+                signature |= (uint)MemoryBus.PeekCodeByte((address & 0xFF0000) | (ushort)(State.ProgramCounter + offset)) << (offset * 8);
         }
 
         var mode = (byte)(State.Status & (CpuStatusFlags.Accumulator8Bit | CpuStatusFlags.Index8Bit));
-        var key = new TranslationKey(address, mode, State.EmulationMode, maximumInstructions);
+        var key = new TranslationKey(address, mode, State.EmulationMode, maximumInstructions, signature);
 
         if (translatedBlocks.TryGetValue(key, out var block))
         {
@@ -74,8 +102,10 @@ public sealed class NativeCpuRunner
 
         block = translator.Translate(MemoryBus, State, maximumInstructions);
         translatedBlocks.Add(key, block);
+        BlockDiscovered?.Invoke(block.Decoded);
         return block;
     }
+#endif
 
     private void EnterNmi()
     {
@@ -108,5 +138,6 @@ public sealed class NativeCpuRunner
         uint ProgramAddress,
         byte RegisterWidthMode,
         bool EmulationMode,
-        int MaximumInstructions);
+        int MaximumInstructions,
+        uint CodeSignature);
 }

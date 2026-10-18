@@ -1,6 +1,6 @@
 namespace Smw2Pc.Core.Audio;
 
-internal sealed class Spc700Cpu(SnesApu bus)
+internal sealed partial class Spc700Cpu(SnesApu bus)
 {
     private const byte Carry = 0x01;
     private const byte Zero = 0x02;
@@ -24,7 +24,9 @@ internal sealed class Spc700Cpu(SnesApu bus)
     ];
 
     private byte status;
+#if !SMW2PC_RECOMPILED
     private byte opcode;
+#endif
     private int extraCycles;
 
     public int A { get; private set; }
@@ -33,6 +35,17 @@ internal sealed class Spc700Cpu(SnesApu bus)
     public int StackPointer { get; private set; }
     public ushort ProgramCounter { get; private set; }
     public bool Halted { get; private set; }
+    public long TranslatedInstructionsExecuted { get; private set; }
+
+#if !SMW2PC_RECOMPILED
+    internal Action<ushort, byte>? InstructionObserved { get; set; }
+#endif
+
+    internal byte[] GetExecutionState()
+    {
+        return [(byte)A, (byte)X, (byte)Y, (byte)StackPointer, (byte)ProgramCounter,
+            (byte)(ProgramCounter >> 8), status, (byte)(Halted ? 1 : 0)];
+    }
 
     public void Reset()
     {
@@ -53,6 +66,11 @@ internal sealed class Spc700Cpu(SnesApu bus)
             return 2;
         }
 
+#if SMW2PC_RECOMPILED
+        TranslatedInstructionsExecuted++;
+        return ExecuteTranslatedStep();
+#else
+        InstructionObserved?.Invoke(ProgramCounter, (byte)Read(ProgramCounter));
         opcode = Fetch();
         extraCycles = 0;
         var cycles = BaseCycles[opcode];
@@ -315,8 +333,10 @@ internal sealed class Spc700Cpu(SnesApu bus)
         }
 
         return cycles + extraCycles;
+#endif
     }
 
+#if !SMW2PC_RECOMPILED
     private bool TryExecuteAlu()
     {
         var family = opcode & 0xE0;
@@ -366,6 +386,7 @@ internal sealed class Spc700Cpu(SnesApu bus)
 
         return true;
     }
+#endif
 
     private void ExecuteDirectPageToDirectPage(AluOperation operation)
     {
@@ -459,6 +480,7 @@ internal sealed class Spc700Cpu(SnesApu bus)
         }
     }
 
+#if !SMW2PC_RECOMPILED
     private void BranchOnDirectPageBit(bool set)
     {
         var pageOffset = Fetch();
@@ -471,6 +493,8 @@ internal sealed class Spc700Cpu(SnesApu bus)
             extraCycles += 2;
         }
     }
+
+#endif
 
     private void CompareBranch(int pageOffset, bool indexed)
     {
@@ -486,6 +510,7 @@ internal sealed class Spc700Cpu(SnesApu bus)
         Branch(value != 0);
     }
 
+#if !SMW2PC_RECOMPILED
     private void ExecuteCarryBitOperation()
     {
         var (address, bit) = FetchBitAddress();
@@ -500,6 +525,8 @@ internal sealed class Spc700Cpu(SnesApu bus)
             case 0xAA: status = SetFlag(status, Carry, bitValue != 0); break;
         }
     }
+
+#endif
 
     private (ushort Address, int Bit) FetchBitAddress()
     {

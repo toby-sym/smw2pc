@@ -27,7 +27,8 @@ public sealed class NativeBlockTranslator
             throw new InvalidOperationException("A halted CPU cannot translate another instruction block.");
         }
 
-        var startAddress = ComposeAddress(state.ProgramBank, state.ProgramCounter);
+        var decoded = Decode(memoryBus, state, maximumInstructions);
+        var startAddress = decoded.StartAddress;
         var method = new DynamicMethod(
             $"native_block_{startAddress:X6}",
             typeof(void),
@@ -35,43 +36,50 @@ public sealed class NativeBlockTranslator
             typeof(NativeBlockTranslator).Module,
             skipVisibility: true);
         var il = method.GetILGenerator();
-        var programCounter = state.ProgramCounter;
-        var instructionCount = 0;
-        var terminatesBlock = false;
-
-        while (instructionCount < maximumInstructions && !terminatesBlock)
+        foreach (var instruction in decoded.Instructions)
         {
-            var instructionAddress = ComposeAddress(state.ProgramBank, programCounter);
-            var opcode = ReadProgramByte(memoryBus, state.ProgramBank, ref programCounter);
-            instructionCount++;
-
-            if (!CpuInstructionSet.TryGetDefinition(opcode, out var definition))
-            {
-                throw new NotSupportedException(
-                    $"Opcode 0x{opcode:X2} at 0x{instructionAddress:X6} is not supported by the native translator yet.");
-            }
-
-            var operand = ReadOperand(memoryBus, state, definition.AddressingMode, ref programCounter);
-            EmitInstruction(il, definition, operand, programCounter);
-            terminatesBlock = EndsBlock(definition.Operation);
-
-            if (terminatesBlock && definition.Operation is CpuOperation.ResetStatusBits
+            EmitInstruction(il, new CpuInstructionDefinition(instruction.Operation, instruction.AddressingMode),
+                instruction.Operand, instruction.NextProgramCounter);
+            if (instruction.Operation is CpuOperation.ResetStatusBits
                 or CpuOperation.SetStatusBits
                 or CpuOperation.PullStatus
                 or CpuOperation.ExchangeCarryAndEmulation)
             {
-                EmitSetProgramCounter(il, programCounter);
+                EmitSetProgramCounter(il, instruction.NextProgramCounter);
             }
         }
 
-        if (!terminatesBlock)
+        if (!EndsBlock(decoded.Instructions[^1].Operation))
         {
-            EmitSetProgramCounter(il, programCounter);
+            EmitSetProgramCounter(il, decoded.Instructions[^1].NextProgramCounter);
         }
 
         il.Emit(OpCodes.Ret);
         var code = (NativeCpuBlockCode)method.CreateDelegate(typeof(NativeCpuBlockCode));
-        return new NativeCpuBlock(startAddress, instructionCount, code);
+        return new NativeCpuBlock(decoded, code);
+    }
+
+    internal static DecodedCpuBlock Decode(SnesMemoryBus bus, CpuState state, int maximumInstructions = DefaultMaximumInstructions)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumInstructions);
+        var pc = state.ProgramCounter;
+        var instructions = new List<NativeCpuInstruction>();
+        do
+        {
+            var opcode = ReadProgramByte(bus, state.ProgramBank, ref pc);
+            if (!CpuInstructionSet.TryGetDefinition(opcode, out var definition))
+                throw new NotSupportedException($"Unsupported opcode ${opcode:X2}.");
+            var operand = ReadOperand(bus, state, definition.AddressingMode, ref pc);
+            instructions.Add(new NativeCpuInstruction(definition.Operation, definition.AddressingMode, operand, pc));
+            if (EndsBlock(definition.Operation)) break;
+        } while (instructions.Count < maximumInstructions);
+
+        var length = unchecked((ushort)(pc - state.ProgramCounter));
+        var bytes = new byte[length];
+        for (var index = 0; index < bytes.Length; index++)
+            bytes[index] = bus.PeekCodeByte(ComposeAddress(state.ProgramBank, unchecked((ushort)(state.ProgramCounter + index))));
+        return new DecodedCpuBlock(ComposeAddress(state.ProgramBank, state.ProgramCounter),
+            (byte)(state.Status & 0x30), state.EmulationMode, instructions, bytes);
     }
 
     private static void EmitInstruction(
@@ -183,12 +191,12 @@ public sealed class NativeBlockTranslator
     private static byte ReadProgramByte(SnesMemoryBus memoryBus, byte programBank, ref ushort programCounter)
     {
         var address = ComposeAddress(programBank, programCounter);
-        var value = memoryBus.ReadByte(address);
+        var value = memoryBus.PeekCodeByte(address);
         programCounter = unchecked((ushort)(programCounter + 1));
         return value;
     }
 
-    private static bool EndsBlock(CpuOperation operation)
+    internal static bool EndsBlock(CpuOperation operation)
     {
         return operation is CpuOperation.Stop
             or CpuOperation.JumpAbsolute
