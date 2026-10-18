@@ -1,9 +1,11 @@
-name: CI
+name: Verify
 
 on:
-  push:
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -11,37 +13,19 @@ permissions:
 jobs:
   verify:
     name: Format, build, and test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-
-      - name: Restore
-        run: dotnet restore Smw2Pc.sln
-
-      - name: Auto-format branch pushes
-        if: github.event_name != 'pull_request' && github.ref_type == 'branch' && github.ref != 'refs/heads/main'
-        run: dotnet format Smw2Pc.sln --no-restore
-
-      - name: Check formatting on pull requests, main, and tags
-        if: github.event_name == 'pull_request' || github.ref_type != 'branch' || github.ref == 'refs/heads/main'
-        run: dotnet format Smw2Pc.sln --verify-no-changes --no-restore
-
-      - name: Build
-        run: dotnet build Smw2Pc.sln --configuration Release --no-restore
-
-      # This starts running real tests automatically when test projects are added.
-      - name: Test
-        run: dotnet test Smw2Pc.sln --configuration Release --no-build --no-restore
-
-      - name: Commit and push formatting fixes
-        if: github.event_name != 'pull_request' && github.ref_type == 'branch' && github.ref != 'refs/heads/main'
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Apply .NET formatting"
+      - run: dotnet restore Smw2Pc.sln
+      - run: dotnet format Smw2Pc.sln --verify-no-changes --no-restore
+      - run: dotnet build Smw2Pc.sln --configuration Release --no-restore
+      - run: dotnet test Smw2Pc.sln --configuration Release --no-build --no-restore
+      - name: Check build version rules
+        shell: pwsh
+        run: ./tools/test-build-version.ps1

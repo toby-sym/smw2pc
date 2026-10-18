@@ -1,34 +1,32 @@
 # SMW2PC
 
-SMW2PC builds a ROM-specific, statically recompiled player for Super Mario World.
+SMW2PC turns your Super Mario World ROM into a portable Windows game.
 
-## Build and run
+## Run
 
-On Windows, provide a local `.sfc` or `.smc` ROM:
+Download and extract a Windows ZIP from **Releases**, or a dev artifact from **Actions**.
+Open **SMW2PC.exe**, click **Add ROM**, and select your `.sfc` or `.smc` file.
+When the build finishes, run **SMW.exe** from the same folder.
 
-```powershell
-.\tools\build-rom-exe.ps1 -Rom ".\Super Mario World (Europe).sfc"
-.\artifacts\rom-exe\SMW2PC.Recompiled.exe
-```
-
-The build creates a portable Windows x64 executable with the ROM and SDL libraries bundled. ROM files are not included in the repository. The player also accepts a ROM from **Open ROM** or **F1**.
+The builder includes its compiler and runtime. No SDK, source checkout, or internet connection is needed.
+Build errors are logged to `%LOCALAPPDATA%\SMW2PC\build.log`.
 
 ## Controls
 
-- Arrows: move; **Z**: jump; **X**: run
-- **Enter**: Start; **Right Shift**: Select; **A/S**: Y/X; **Q/W**: L/R
-- **F2**: display settings
+Arrows move; **Z** jumps; **X** runs. **Enter** starts or pauses; **F2** opens settings.
 
-The window can be resized. Display settings control pixel aspect ratio and render cap; game logic runs at the ROM's native rate. Pixels use nearest-neighbor scaling, with camera and object positions interpolated between frames.
+## Development and releases
 
-## How it works
+Every branch push and pull request produces a versioned Windows dev artifact.
+Push a tag such as `v0.1.0` to publish a GitHub Release with a Windows ZIP and SHA-256 checksum.
+The **Build Windows** workflow also supports manual dev or release builds; releases require a `vX.Y.Z` tag.
+`Version.props` sets the base version for dev builds.
 
-The build discovers ROM code paths, generates host methods for 65C816 and SPC700 instructions, then compiles them into the player. Runtime opcode emulation and translation are not used. The SNES hardware, including memory, video, controllers, DMA, and audio, is modeled by the player.
+With the .NET 10 SDK installed, package the builder using `./tools/package-builder.ps1`.
+Run checks with `dotnet test Smw2Pc.sln` and `./tools/test-build-version.ps1`.
 
-This is an experimental proof of concept. Uncompiled code paths stop with a coverage error, and sampled gameplay profiles do not prove complete game coverage. Hardware timing and audio are approximate.
+## Compilation
 
-Run the core tests with:
-
-```powershell
-dotnet test Smw2Pc.sln
-```
+The builder generates and compiles ROM-specific CPU and audio code before writing `SMW.exe`.
+The player contains no runtime ROM translator or CPU interpreter fallback. SNES hardware is modeled in host code.
+This remains a proof of concept: uncompiled paths stop with a coverage error, and hardware timing and audio are approximate.

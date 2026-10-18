@@ -1,38 +1,124 @@
-name: Package Windows x64
+name: Build Windows
+run-name: ${{ github.ref_type == 'tag' && format('Release {0}', github.ref_name) || (inputs.build_type == 'release' && format('Release {0}', inputs.tag_name) || 'Dev build') }}
 
 on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
+    inputs:
+      build_type:
+        description: Build type
+        type: choice
+        default: dev
+        options: [dev, release]
+      tag_name:
+        description: Release tag (vX.Y.Z); leave empty for dev
+        type: string
+        required: false
+  workflow_call:
+    inputs:
+      build_type:
+        type: string
+        default: dev
+      tag_name:
+        type: string
+        required: false
 
 permissions:
   contents: read
 
+concurrency:
+  group: smw2pc-build-${{ github.event_name }}-${{ github.ref }}-${{ inputs.tag_name }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.build_type != 'release' }}
+
 jobs:
+  prepare:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      ref: ${{ steps.version.outputs.ref }}
+      channel: ${{ steps.version.outputs.channel }}
+      artifact: ${{ steps.version.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Resolve version and source commit
+        id: version
+        shell: pwsh
+        env:
+          BUILD_TYPE: ${{ inputs.build_type || 'dev' }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: ./tools/resolve-build-version.ps1 -BuildType $env:BUILD_TYPE -TagName $env:TAG_NAME
+
+  verify:
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.prepare.outputs.ref }}
+
   package:
-    name: Publish Windows x64
+    name: Windows x64 builder
+    needs: [prepare, verify]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-
-      - name: Publish self-contained app
-        run: >-
-          dotnet publish src/Smw2Pc.Desktop/Smw2Pc.Desktop.csproj
-          --configuration Release
-          --runtime win-x64
-          --self-contained true
-          -p:PublishSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
-          --output artifacts/win-x64
-
-      - name: Archive build
-        run: Compress-Archive -Path artifacts/win-x64/* -DestinationPath artifacts/Smw2Pc-win-x64.zip
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      - name: Package the ROM builder
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+        run: ./tools/package-builder.ps1 -Version $env:BUILD_VERSION
+      - name: Verify packaged compilation without a ROM or SDK installation
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+        run: ./tools/test-builder-package.ps1 -Archive "artifacts/distribution/SMW2PC-$env:BUILD_VERSION-win-x64.zip" -Version $env:BUILD_VERSION
+      - name: Upload versioned Windows build
+        uses: actions/upload-artifact@v7
         with:
-          name: Smw2Pc-win-x64
-          path: artifacts/Smw2Pc-win-x64.zip
+          name: ${{ needs.prepare.outputs.artifact }}
+          path: |
+            artifacts/distribution/*.zip
+            artifacts/distribution/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: needs.prepare.outputs.channel == 'release'
+    needs: [prepare, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.prepare.outputs.artifact }}
+          path: release-assets
+      - name: Publish tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.ref }}
+        run: |
+          tag_commit="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha 2>/dev/null || true)"
+          if [ -n "$tag_commit" ] && [ "$tag_commit" != "$SOURCE_COMMIT" ]; then
+            echo "The release tag moved after the build was prepared." >&2
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --target "$SOURCE_COMMIT" --title "SMW2PC $RELEASE_VERSION" --generate-notes
+          fi
