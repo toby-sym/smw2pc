@@ -190,58 +190,24 @@ public static class SnesVideoRenderer
 
                 var sampleX = screenX + shiftX;
                 var sampleY = screenY + shiftY;
-                var x0 = (int)MathF.Floor(sampleX);
-                var y0 = (int)MathF.Floor(sampleY);
-                var x1 = x0 + 1;
-                var y1 = y0 + 1;
-                var fractionX = sampleX - x0;
-                var fractionY = sampleY - y0;
-                var outputOffset = pixel * BytesPerPixel;
-                var topLeft = GetBackgroundSampleOffset(x0, y0, pixelSources, outputOffset);
-                var topRight = GetBackgroundSampleOffset(x1, y0, pixelSources, outputOffset);
-                var bottomLeft = GetBackgroundSampleOffset(x0, y1, pixelSources, outputOffset);
-                var bottomRight = GetBackgroundSampleOffset(x1, y1, pixelSources, outputOffset);
-
-                for (var channel = 0; channel < BytesPerPixel; channel++)
+                var samplePixelX = (int)MathF.Round(sampleX, MidpointRounding.AwayFromZero);
+                var samplePixelY = (int)MathF.Round(sampleY, MidpointRounding.AwayFromZero);
+                if ((uint)samplePixelX >= Width || (uint)samplePixelY >= Height)
                 {
-                    var top = Lerp(
-                        sourcePixels[topLeft + channel],
-                        sourcePixels[topRight + channel],
-                        fractionX);
-                    var bottom = Lerp(
-                        sourcePixels[bottomLeft + channel],
-                        sourcePixels[bottomRight + channel],
-                        fractionX);
-                    outputPixels[outputOffset + channel] = (byte)Math.Clamp(
-                        (int)MathF.Round(Lerp(top, bottom, fractionY)),
-                        0,
-                        byte.MaxValue);
+                    continue;
                 }
+
+                var samplePixel = (samplePixelY * Width) + samplePixelX;
+                if (pixelSources[samplePixel] > 4)
+                {
+                    continue;
+                }
+
+                var outputOffset = pixel * BytesPerPixel;
+                var sampleOffset = samplePixel * BytesPerPixel;
+                sourcePixels.Slice(sampleOffset, BytesPerPixel).CopyTo(outputPixels[outputOffset..]);
             }
         }
-    }
-
-    private static int GetBackgroundSampleOffset(
-        int x,
-        int y,
-        ReadOnlySpan<byte> pixelSources,
-        int fallbackOffset)
-    {
-        if ((uint)x >= Width || (uint)y >= Height)
-        {
-            return fallbackOffset;
-        }
-
-        var pixel = (y * Width) + x;
-        // The sample is already inside the background image. Allow it to cross between
-        // visible background layers so their shared edges move continuously. Object
-        // pixels remain fixed at the current frame to avoid smearing sprites.
-        return pixelSources[pixel] <= 4 ? pixel * BytesPerPixel : fallbackOffset;
-    }
-
-    private static float Lerp(float start, float end, float amount)
-    {
-        return start + ((end - start) * amount);
     }
 
     private static void DrawScreenLayers(
@@ -880,6 +846,11 @@ public static class SnesVideoRenderer
                 }
             }
 
+            // Keep the SNES palette colors intact. Blending neighboring sprite pixels
+            // creates a colored trail around moving edges once the frame is upscaled.
+            x = MathF.Round(x, MidpointRounding.AwayFromZero);
+            y = MathF.Round(y, MidpointRounding.AwayFromZero);
+
             var large = (currentHighBits & 2) != 0;
             var objectSize = large ? largeSize : smallSize;
 
@@ -1076,8 +1047,8 @@ public static class SnesVideoRenderer
             verticalDelta = 0;
         }
 
-        // Blend between the previous and current completed PPU samples. Extrapolating
-        // beyond the current sample overshoots when the camera eases, stops, or reverses.
+        // Sample the nearest SNES pixel between the previous and current completed PPU
+        // samples. Keeping each palette color intact avoids a soft trail at tile edges.
         var sampleShiftX = -horizontalDelta * (1f - interpolationProgress);
         var sampleShiftY = -verticalDelta * (1f - interpolationProgress);
         var characterBaseRegister = registers[0x0B + background / 2];
@@ -1094,150 +1065,37 @@ public static class SnesVideoRenderer
                 continue;
             }
 
-            var sampleX = screenX + horizontalOffset + sampleShiftX;
-            var sampleY = screenY + verticalOffset + sampleShiftY;
-            var x0 = (int)MathF.Floor(sampleX);
-            var y0 = (int)MathF.Floor(sampleY);
-            var fractionX = sampleX - x0;
-            var fractionY = sampleY - y0;
+            var sampleX = (int)MathF.Round(
+                screenX + horizontalOffset + sampleShiftX,
+                MidpointRounding.AwayFromZero);
+            var sampleY = (int)MathF.Round(
+                screenY + verticalOffset + sampleShiftY,
+                MidpointRounding.AwayFromZero);
             var pixelIndex = (screenY * Width) + screenX;
-            if (fractionX == 0f && fractionY == 0f)
+            if (TrySampleBackgroundColor(
+                sampleX,
+                sampleY,
+                pixelWidth,
+                pixelHeight,
+                tileWidth,
+                tileHeight,
+                mapBase,
+                mapWidth,
+                characterBase,
+                bytesPerTile,
+                bitsPerPixel,
+                priority,
+                mode,
+                background,
+                videoRam,
+                colorRam,
+                out var sampledColor))
             {
-                if (TrySampleBackgroundColor(
-                    x0,
-                    y0,
-                    pixelWidth,
-                    pixelHeight,
-                    tileWidth,
-                    tileHeight,
-                    mapBase,
-                    mapWidth,
-                    characterBase,
-                    bytesPerTile,
-                    bitsPerPixel,
-                    priority,
-                    mode,
-                    background,
-                    videoRam,
-                    colorRam,
-                    out var exactColor))
-                {
-                    WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, ReadColor(exactColor, brightness, forcedBlank: false));
-                    pixelColors[pixelIndex] = exactColor;
-                    pixelSources[pixelIndex] = (byte)(background + 1);
-                }
-
-                continue;
+                WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, ReadColor(sampledColor, brightness, forcedBlank: false));
+                pixelColors[pixelIndex] = sampledColor;
+                pixelSources[pixelIndex] = (byte)(background + 1);
             }
-
-            var destination = pixelColors[pixelIndex];
-            var destinationRed = destination & 0x1F;
-            var destinationGreen = (destination >> 5) & 0x1F;
-            var destinationBlue = (destination >> 10) & 0x1F;
-            var coverage = 0f;
-            var red = 0f;
-            var green = 0f;
-            var blue = 0f;
-
-            // Transparent taps contribute no coverage, so the layer beneath remains visible
-            // at tile edges while this background moves between integer pixel positions.
-            AccumulateBackgroundSample(
-                x0, y0, (1f - fractionX) * (1f - fractionY),
-                pixelWidth, pixelHeight, tileWidth, tileHeight, mapBase, mapWidth, characterBase,
-                bytesPerTile, bitsPerPixel, priority, mode, background, videoRam, colorRam,
-                ref coverage, ref red, ref green, ref blue);
-            if (fractionX > 0f)
-            {
-                AccumulateBackgroundSample(
-                    x0 + 1, y0, fractionX * (1f - fractionY),
-                    pixelWidth, pixelHeight, tileWidth, tileHeight, mapBase, mapWidth, characterBase,
-                    bytesPerTile, bitsPerPixel, priority, mode, background, videoRam, colorRam,
-                    ref coverage, ref red, ref green, ref blue);
-            }
-
-            if (fractionY > 0f)
-            {
-                AccumulateBackgroundSample(
-                    x0, y0 + 1, (1f - fractionX) * fractionY,
-                    pixelWidth, pixelHeight, tileWidth, tileHeight, mapBase, mapWidth, characterBase,
-                    bytesPerTile, bitsPerPixel, priority, mode, background, videoRam, colorRam,
-                    ref coverage, ref red, ref green, ref blue);
-                if (fractionX > 0f)
-                {
-                    AccumulateBackgroundSample(
-                        x0 + 1, y0 + 1, fractionX * fractionY,
-                        pixelWidth, pixelHeight, tileWidth, tileHeight, mapBase, mapWidth, characterBase,
-                        bytesPerTile, bitsPerPixel, priority, mode, background, videoRam, colorRam,
-                        ref coverage, ref red, ref green, ref blue);
-                }
-            }
-
-            if (coverage <= 0f)
-            {
-                continue;
-            }
-
-            var inverseCoverage = 1f - coverage;
-            var colorValue = (ushort)(
-                Math.Clamp((int)MathF.Round((red + (destinationRed * inverseCoverage))), 0, 31)
-                | (Math.Clamp((int)MathF.Round((green + (destinationGreen * inverseCoverage))), 0, 31) << 5)
-                | (Math.Clamp((int)MathF.Round((blue + (destinationBlue * inverseCoverage))), 0, 31) << 10));
-            WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, ReadColor(colorValue, brightness, forcedBlank: false));
-            pixelColors[pixelIndex] = colorValue;
-            pixelSources[pixelIndex] = (byte)(background + 1);
-
         }
-    }
-
-    private static void AccumulateBackgroundSample(
-        int worldX,
-        int worldY,
-        float weight,
-        int pixelWidth,
-        int pixelHeight,
-        int tileWidth,
-        int tileHeight,
-        int mapBase,
-        int mapWidth,
-        int characterBase,
-        int bytesPerTile,
-        int bitsPerPixel,
-        int priority,
-        int mode,
-        int background,
-        ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam,
-        ref float coverage,
-        ref float red,
-        ref float green,
-        ref float blue)
-    {
-        if (weight <= 0f || !TrySampleBackgroundColor(
-            worldX,
-            worldY,
-            pixelWidth,
-            pixelHeight,
-            tileWidth,
-            tileHeight,
-            mapBase,
-            mapWidth,
-            characterBase,
-            bytesPerTile,
-            bitsPerPixel,
-            priority,
-            mode,
-            background,
-            videoRam,
-            colorRam,
-            out var sampledColor))
-        {
-            return;
-        }
-
-        coverage += weight;
-        red += (sampledColor & 0x1F) * weight;
-        green += ((sampledColor >> 5) & 0x1F) * weight;
-        blue += ((sampledColor >> 10) & 0x1F) * weight;
     }
 
     private static bool TrySampleBackgroundColor(

@@ -75,7 +75,7 @@ public sealed class SnesHardwareTests
     }
 
     [TestMethod]
-    public void RendererInterpolatesObjectPositionInBothDirections()
+    public void RendererMovesObjectsWithoutBlendingPaletteColors()
     {
         var image = CreateRomImage();
         for (var index = 0; index < 31; index++)
@@ -131,9 +131,9 @@ public sealed class SnesHardwareTests
         var pixels = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.5f);
 
-        var halfwayPixel = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
+        var clearedPixel = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
         var solidPixel = ((20 * SnesVideoRenderer.Width) + 25) * SnesVideoRenderer.BytesPerPixel;
-        Assert.IsInRange((byte)128, (byte)144, pixels[halfwayPixel]);
+        Assert.AreEqual((byte)0, pixels[clearedPixel]);
         Assert.AreEqual(byte.MaxValue, pixels[solidPixel]);
 
         SetObjectZero(memoryBus, x: 20, y: 20);
@@ -145,7 +145,7 @@ public sealed class SnesHardwareTests
 
         var reverseHalfwayPixel = ((20 * SnesVideoRenderer.Width) + 26) * SnesVideoRenderer.BytesPerPixel;
         var reverseSolidPixel = ((20 * SnesVideoRenderer.Width) + 27) * SnesVideoRenderer.BytesPerPixel;
-        Assert.IsInRange((byte)56, (byte)72, pixels[reverseHalfwayPixel]);
+        Assert.AreEqual((byte)0, pixels[reverseHalfwayPixel]);
         Assert.AreEqual(byte.MaxValue, pixels[reverseSolidPixel]);
 
         SetObjectZero(memoryBus, x: 29, y: 20, tile: 1);
@@ -154,7 +154,7 @@ public sealed class SnesHardwareTests
 
         var animatedTileHalfwayPixel = ((20 * SnesVideoRenderer.Width) + 24) * SnesVideoRenderer.BytesPerPixel;
         var currentObjectPixel = ((20 * SnesVideoRenderer.Width) + 31) * SnesVideoRenderer.BytesPerPixel;
-        Assert.IsInRange((byte)120, (byte)136, pixels[animatedTileHalfwayPixel]);
+        Assert.AreEqual((byte)0, pixels[animatedTileHalfwayPixel]);
         Assert.AreEqual(byte.MaxValue, pixels[currentObjectPixel]);
 
         SetVideoRamAddress(memoryBus, 0x10);
@@ -169,7 +169,7 @@ public sealed class SnesHardwareTests
     }
 
     [TestMethod]
-    public void RendererInterpolatesBackgroundScrollBetweenFrames()
+    public void RendererMovesBackgroundWithoutBlendingPaletteColors()
     {
         var image = CreateRomImage();
         image[0] = 0x80;
@@ -203,7 +203,7 @@ public sealed class SnesHardwareTests
         var pixels = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.5f);
         var halfwayPixel = SnesVideoRenderer.BytesPerPixel;
-        Assert.IsInRange((byte)120, (byte)140, pixels[halfwayPixel]);
+        Assert.AreEqual(byte.MaxValue, pixels[halfwayPixel]);
 
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 1f);
         Assert.IsGreaterThan((byte)240, pixels[halfwayPixel]);
