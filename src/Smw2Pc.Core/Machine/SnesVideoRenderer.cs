@@ -153,8 +153,8 @@ public static class SnesVideoRenderer
                     vertical = 0;
                 }
 
-                horizontalShifts[background] = horizontal * interpolationProgress;
-                verticalShifts[background] = vertical * interpolationProgress;
+                horizontalShifts[background] = -horizontal * (1f - interpolationProgress);
+                verticalShifts[background] = -vertical * (1f - interpolationProgress);
             }
 
             for (var screenX = 0; screenX < Width; screenX++)
@@ -843,7 +843,7 @@ public static class SnesVideoRenderer
                     var xDelta = x - previousX;
                     if (Math.Abs(xDelta) <= MaximumInterpolatedObjectDelta)
                     {
-                        x += xDelta * interpolationProgress;
+                        x = previousX + (xDelta * interpolationProgress);
                     }
 
                     var previousY = previousObjectRam[objectAddress + 1];
@@ -859,7 +859,7 @@ public static class SnesVideoRenderer
 
                     if (Math.Abs(yDelta) <= MaximumInterpolatedObjectDelta)
                     {
-                        y += yDelta * interpolationProgress;
+                        y = previousY + (yDelta * interpolationProgress);
                     }
                 }
             }
@@ -1060,10 +1060,10 @@ public static class SnesVideoRenderer
             verticalDelta = 0;
         }
 
-        // Predict each layer from its last two scroll positions before compositing;
-        // this keeps the rendered camera aligned with display time without a full-frame delay.
-        var sampleShiftX = horizontalDelta * interpolationProgress;
-        var sampleShiftY = verticalDelta * interpolationProgress;
+        // Blend between the previous and current completed PPU samples. Extrapolating
+        // beyond the current sample overshoots when the camera eases, stops, or reverses.
+        var sampleShiftX = -horizontalDelta * (1f - interpolationProgress);
+        var sampleShiftY = -verticalDelta * (1f - interpolationProgress);
         var characterBaseRegister = registers[0x0B + background / 2];
         var characterBase = ((background & 1) == 0
             ? characterBaseRegister & 0x0F

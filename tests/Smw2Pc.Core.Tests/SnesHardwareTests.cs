@@ -143,8 +143,8 @@ public sealed class SnesHardwareTests
 
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 0.25f);
 
-        var reverseHalfwayPixel = ((20 * SnesVideoRenderer.Width) + 17) * SnesVideoRenderer.BytesPerPixel;
-        var reverseSolidPixel = ((20 * SnesVideoRenderer.Width) + 18) * SnesVideoRenderer.BytesPerPixel;
+        var reverseHalfwayPixel = ((20 * SnesVideoRenderer.Width) + 26) * SnesVideoRenderer.BytesPerPixel;
+        var reverseSolidPixel = ((20 * SnesVideoRenderer.Width) + 27) * SnesVideoRenderer.BytesPerPixel;
         Assert.IsInRange((byte)56, (byte)72, pixels[reverseHalfwayPixel]);
         Assert.AreEqual(byte.MaxValue, pixels[reverseSolidPixel]);
 
