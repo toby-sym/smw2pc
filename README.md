@@ -48,14 +48,22 @@ dotnet test Smw2Pc.sln
 
 ## ROM-specific executable prototype
 
-On Windows, build a self-contained executable that starts directly in a local
-`.sfc` or `.smc` ROM with:
+Build a self-contained executable that starts directly in a local `.sfc` or
+`.smc` ROM with:
 
 ```powershell
 .\tools\build-rom-exe.ps1 .\path\to\game.sfc
 ```
 
-The output is `artifacts\rom-exe\Smw2Pc.Desktop.exe`. This first prototype
-embeds the ROM in the app and uses the current SNES hardware model and runtime
-65C816 translator. It does not yet statically recompile ROM instructions; that
-is the next step for this proof of concept.
+The default output is `artifacts\rom-exe\Smw2Pc.Desktop.exe`. Pass
+`-RuntimeIdentifier linux-x64` or another .NET runtime identifier to build for
+another target. The app and native SDL dependencies are bundled for that target
+so a separate .NET installation is not required.
+
+The builder statically discovers direct control flow from the reset and
+interrupt vectors, emits host-language methods for those 65C816 blocks, and
+compiles them into the app. The ROM is embedded as data. The SNES hardware model
+still runs in the executable, and code reached through unresolved indirect
+control flow or copied into writable RAM falls back to the runtime translator.
+This is a static CPU recompilation prototype, not a native reimplementation of
+SMW's game logic or proof that every ROM path has been statically compiled.

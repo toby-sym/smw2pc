@@ -34,4 +34,9 @@
     <EmbeddedResource Include="$(CompiledRomPath)" LogicalName="Smw2Pc.Desktop.CompiledRom" />
   </ItemGroup>
 
+  <ItemGroup Condition="'$(RecompiledSourceDirectory)' != ''">
+    <EmbeddedResource Include="$(RecompiledSourceDirectory)\proof.json" LogicalName="Smw2Pc.Desktop.RecompilationProof" />
+    <EmbeddedResource Include="$(RecompiledSourceDirectory)\manifest.json" LogicalName="Smw2Pc.Desktop.RecompilationManifest" />
+  </ItemGroup>
+
 </Project>

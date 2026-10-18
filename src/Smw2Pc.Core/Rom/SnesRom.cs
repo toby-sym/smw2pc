@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Smw2Pc.Core.Rom;
@@ -21,6 +22,7 @@ public sealed class SnesRom
         SourcePath = sourcePath;
         FileName = fileName;
         this.data = data;
+        Sha256 = Convert.ToHexString(SHA256.HashData(data));
         HasCopierHeader = hasCopierHeader;
         Header = header;
     }
@@ -36,6 +38,8 @@ public sealed class SnesRom
     public bool HasCopierHeader { get; }
 
     public SnesRomHeader Header { get; }
+
+    public string Sha256 { get; }
 
     public static SnesRom Load(string path)
     {

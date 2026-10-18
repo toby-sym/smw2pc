@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Smw2Pc.Core\Smw2Pc.Core.csproj" />
+    <Reference Include="Microsoft.CodeAnalysis">
+      <HintPath>$(MSBuildSDKsPath)\..\Roslyn\bincore\Microsoft.CodeAnalysis.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.CodeAnalysis.CSharp">
+      <HintPath>$(MSBuildSDKsPath)\..\Roslyn\bincore\Microsoft.CodeAnalysis.CSharp.dll</HintPath>
+    </Reference>
+    <EmbeddedResource Include="..\Smw2Pc.Core\Cpu\CpuInstructionExecutor.cs" LogicalName="CpuInstructionExecutor.cs" />
+    <EmbeddedResource Include="..\Smw2Pc.Core\Audio\Spc700Cpu.cs" LogicalName="Spc700Cpu.cs" />
+  </ItemGroup>
+
+</Project>

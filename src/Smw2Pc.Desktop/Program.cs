@@ -64,8 +64,10 @@ internal static class Program
         new(GameAction.R, "R", "Shoulder"),
     ];
 
-    private static int Main()
+    private static int Main(string[] args)
     {
+        if (args.Contains("--verify") || args.Contains("--headless"))
+            return HeadlessProof.Run(args);
         var settings = DesktopSettings.Load();
         if (!SDL.Init(SDL.InitFlags.Video))
         {

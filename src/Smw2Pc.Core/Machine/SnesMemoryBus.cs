@@ -23,9 +23,12 @@ public sealed class SnesMemoryBus
                 $"The current memory bus supports LoROM map modes 0x20 and 0x30; this ROM uses 0x{rom.Header.MapMode:X2}.");
         }
 
+        Rom = rom;
         romData = rom.Data;
         Hardware = new SnesHardware(rom.Header.IsPalRegion);
     }
+
+    public SnesRom Rom { get; }
 
     public SnesHardware Hardware { get; }
 
@@ -97,6 +100,30 @@ public sealed class SnesMemoryBus
     public bool IsCartridgeRomAddress(uint address)
     {
         return TryGetRomOffset(address & AddressMask, out _);
+    }
+
+    // Compiler and code guards must inspect bytes without reading I/O or changing open bus.
+    public byte PeekCodeByte(uint address)
+    {
+        address &= AddressMask;
+        var bank = (int)(address >> 16);
+        var offset = (int)(address & OffsetMask);
+        if (bank is 0x7E or 0x7F)
+            return Hardware.ReadWorkRam(((bank - 0x7E) << 16) | offset);
+        if (IsLowWorkRamMirror(bank, offset))
+            return Hardware.ReadWorkRam(offset & 0x1FFF);
+        if (TryGetRomOffset(address, out var romOffset))
+            return romData.Span[romOffset];
+        throw new NotSupportedException($"Executable memory at ${address:X6} is not ROM or WRAM.");
+    }
+
+    public uint CanonicalCodeAddress(uint address)
+    {
+        if (TryGetRomOffset(address & AddressMask, out var offset))
+            return (uint)((offset / LoRomBankSize << 16) | 0x8000 | (offset & LoRomBankMask));
+        var bank = (int)((address >> 16) & 0xFF);
+        var low = (int)(address & OffsetMask);
+        return IsLowWorkRamMirror(bank, low) ? 0x7E0000u | (uint)low : address & AddressMask;
     }
 
     private bool TryGetRomOffset(uint address, out int romOffset)

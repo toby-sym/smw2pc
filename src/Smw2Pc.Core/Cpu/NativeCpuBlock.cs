@@ -4,20 +4,24 @@ namespace Smw2Pc.Core.Cpu;
 
 public delegate void NativeCpuBlockCode(CpuState state, SnesMemoryBus memoryBus);
 
+internal readonly record struct NativeCpuInstruction(
+    CpuOperation Operation,
+    CpuAddressingMode AddressingMode,
+    uint Operand,
+    ushort NextProgramCounter);
+
 public sealed class NativeCpuBlock
 {
     private readonly NativeCpuBlockCode code;
 
-    internal NativeCpuBlock(uint startAddress, int instructionCount, NativeCpuBlockCode code)
+    internal NativeCpuBlock(DecodedCpuBlock decoded, NativeCpuBlockCode code)
     {
-        StartAddress = startAddress;
-        InstructionCount = instructionCount;
+        Decoded = decoded;
         this.code = code;
     }
-
-    public uint StartAddress { get; }
-
-    public int InstructionCount { get; }
+    internal DecodedCpuBlock Decoded { get; }
+    public uint StartAddress => Decoded.StartAddress;
+    public int InstructionCount => Decoded.InstructionCount;
 
     public void Execute(CpuState state, SnesMemoryBus memoryBus)
     {

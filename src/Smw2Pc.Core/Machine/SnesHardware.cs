@@ -88,6 +88,8 @@ public sealed class SnesHardware
 
     public SnesApu Apu { get; }
 
+    public ReadOnlyMemory<byte> WorkRam => workRam;
+
     public ReadOnlyMemory<byte> VideoRam => videoRam;
 
     public ReadOnlyMemory<byte> ColorRam => colorRam;
