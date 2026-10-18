@@ -117,11 +117,7 @@ internal static class Program
             BundledAssets.GetFontPath());
 
         SDL.SetTextureScaleMode(gameTexture, SDL.ScaleMode.Nearest);
-        var verticalSyncEnabled = SDL.SetRenderVSync(renderer, SDL.RendererVSyncAdaptive);
-        if (!verticalSyncEnabled)
-        {
-            verticalSyncEnabled = SDL.SetRenderVSync(renderer, 1);
-        }
+        var verticalSyncEnabled = SDL.SetRenderVSync(renderer, 1);
         if (!verticalSyncEnabled)
         {
             SDL.SetRenderVSync(renderer, 0);
