@@ -29,7 +29,7 @@ internal sealed class DesktopSettings
 
     public GameAspectRatio AspectRatio { get; set; } = GameAspectRatio.Television;
 
-    public int RenderFrameRate { get; set; } = 60;
+    public int RenderFrameRate { get; set; } = 240;
 
     public SDL.Keycode MoveLeftKey { get; set; } = SDL.Keycode.Left;
 
