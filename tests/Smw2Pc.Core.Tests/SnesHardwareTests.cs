@@ -237,6 +237,22 @@ public sealed class SnesHardwareTests
 
         SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 1f);
         Assert.IsGreaterThan((byte)240, pixels[halfwayPixel]);
+
+        // Check the rendered terrain, including every fine-scroll boundary and reversal.
+        for (var step = 0; step < 64; step++)
+        {
+            var offset = step < 32 ? step : 63 - step;
+            memoryBus.WriteByte(0x00210D, (byte)offset);
+            memoryBus.WriteByte(0x00210D, 0);
+            runner.Run(18_000);
+            SnesVideoRenderer.RenderFrame(memoryBus.Hardware, pixels, interpolationProgress: 1f);
+            for (var x = 0; x < SnesVideoRenderer.Width; x++)
+            {
+                var expectedRed = ((x + offset) & 7) == 2 ? byte.MaxValue : (byte)0;
+                Assert.AreEqual(expectedRed, pixels[x * SnesVideoRenderer.BytesPerPixel],
+                    $"Terrain sampled the wrong pixel at scroll {offset}, screen X {x}.");
+            }
+        }
     }
 
     [TestMethod]
