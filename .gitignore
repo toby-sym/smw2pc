@@ -14,3 +14,7 @@ artifacts/
 ## ROM files
 *.sfc
 *.smc
+
+## Log Files
+*.log
+*.csv

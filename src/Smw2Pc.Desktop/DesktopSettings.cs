@@ -16,7 +16,7 @@ internal sealed class DesktopSettings
     private const int MaximumWindowWidth = 3840;
     private const int MaximumWindowHeight = 2160;
     private const int MinimumRenderFrameRate = 15;
-    private const int MaximumRenderFrameRate = 240;
+    internal const int MaximumRenderFrameRate = 240;
 
     private static readonly string SettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

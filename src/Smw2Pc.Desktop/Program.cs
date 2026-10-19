@@ -12,7 +12,9 @@ internal static class Program
     private const string CompiledRomResourceName = "Smw2Pc.Desktop.CompiledRom";
     private const int InstructionsPerFrame = 18000;
     private const int MaximumCatchUpFrames = 5;
-    private const int MaximumSoftwarePresentationRate = 120;
+    private const int MaximumSoftwarePresentationRate = DesktopSettings.MaximumRenderFrameRate;
+    private const int MaximumVSyncPresentationRate = 90;
+    private const int PresentationIntervalSampleCount = 180;
     private static readonly long SettingsSaveDelayTicks = Stopwatch.Frequency / 2;
     private static readonly (int Width, int Height)[] ResolutionPresets =
     [
@@ -49,6 +51,18 @@ internal static class Program
     }
 
     private readonly record struct BindingRow(GameAction Action, string Label, string Hint);
+
+    private readonly record struct FrameTimingDisplay(string Output, string Work, string Wait, string Peak);
+
+    private struct PresentationTimingSample
+    {
+        public long IntervalTicks;
+        public long EmulationTicks;
+        public long GameRenderTicks;
+        public long DrawTicks;
+        public long PresentTicks;
+        public long WaitTicks;
+    }
 
     private static readonly BindingRow[] BindingRows =
     [
@@ -121,13 +135,13 @@ internal static class Program
         var displayId = SDL.GetDisplayForWindow(window);
         var displayRefreshRate = GetDisplayRefreshRate(displayId);
         var configuredRenderRate = settings.RenderFrameRate;
-        var basePresentationRefreshDivisor = GetPresentationRefreshDivisor(configuredRenderRate, displayRefreshRate);
-        var presentationRefreshDivisor = basePresentationRefreshDivisor;
+        var presentationRefreshDivisor = GetPresentationRefreshDivisor(configuredRenderRate, displayRefreshRate);
         var presentationFrameRate = GetPresentationFrameRate(configuredRenderRate, displayRefreshRate, presentationRefreshDivisor);
         var verticalSyncEnabled = TrySetPresentationVSync(
             renderer,
             displayRefreshRate,
-            presentationRefreshDivisor);
+            presentationRefreshDivisor,
+            presentationFrameRate);
         var nextDisplayModeCheck = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
         var audioError = string.Empty;
         var audioStream = IntPtr.Zero;
@@ -174,10 +188,29 @@ internal static class Program
         GameAction? rebindingAction = null;
         var settingsSavePending = false;
         var settingsSaveTimestamp = 0L;
-        var consecutiveOverBudgetFrames = 0;
-        var consecutiveUnderBudgetFrames = 0;
-        var smoothedFrameWorkTicks = 0L;
         var smoothedRenderToPresentTicks = 0L;
+        var presentationSamples = new PresentationTimingSample[PresentationIntervalSampleCount];
+        var presentationIntervalCount = 0;
+        var nextPresentationIntervalIndex = 0;
+        var lastPresentedTimestamp = 0L;
+        var measuredPresentedFrameRate = 0.0;
+        var longestPresentationIntervalMilliseconds = 0.0;
+        var meanEmulationMilliseconds = 0.0;
+        var meanGameRenderMilliseconds = 0.0;
+        var meanDrawMilliseconds = 0.0;
+        var meanPresentMilliseconds = 0.0;
+        var meanPacerWaitMilliseconds = 0.0;
+        var meanOtherMilliseconds = 0.0;
+        var peakEmulationMilliseconds = 0.0;
+        var peakGameRenderMilliseconds = 0.0;
+        var peakPresentMilliseconds = 0.0;
+        var nextTimingDisplayUpdate = 0L;
+        var timingDisplay = new FrameTimingDisplay("Output: collecting frame timing...", "", "", "");
+        var emulationTicksSinceLastPresentation = 0L;
+        var gameRenderTicksSinceLastPresentation = 0L;
+        var drawTicksSinceLastPresentation = 0L;
+        var presentTicksSinceLastPresentation = 0L;
+        var pacerWaitTicksSinceLastPresentation = 0L;
 
         using (var compiledRomStream = typeof(Program).Assembly.GetManifestResourceStream(CompiledRomResourceName))
         {
@@ -192,9 +225,6 @@ internal static class Program
                     cpuRunner = new NativeCpuRunner(memoryBus);
                     memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
                     frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
-                    consecutiveOverBudgetFrames = 0;
-                    consecutiveUnderBudgetFrames = 0;
-                    smoothedFrameWorkTicks = 0;
                     smoothedRenderToPresentTicks = 0;
                     previousTimestamp = Stopwatch.GetTimestamp();
                     nextPresentationTimestamp = previousTimestamp;
@@ -226,17 +256,14 @@ internal static class Program
                 {
                     displayId = currentDisplayId;
                     displayRefreshRate = GetDisplayRefreshRate(displayId);
-                    basePresentationRefreshDivisor = GetPresentationRefreshDivisor(settings.RenderFrameRate, displayRefreshRate);
-                    presentationRefreshDivisor = basePresentationRefreshDivisor;
+                    presentationRefreshDivisor = GetPresentationRefreshDivisor(settings.RenderFrameRate, displayRefreshRate);
                     presentationFrameRate = GetPresentationFrameRate(settings.RenderFrameRate, displayRefreshRate, presentationRefreshDivisor);
                     verticalSyncEnabled = TrySetPresentationVSync(
                         renderer,
                         displayRefreshRate,
-                        presentationRefreshDivisor);
+                        presentationRefreshDivisor,
+                        presentationFrameRate);
                     configuredRenderRate = settings.RenderFrameRate;
-                    consecutiveOverBudgetFrames = 0;
-                    consecutiveUnderBudgetFrames = 0;
-                    smoothedFrameWorkTicks = 0;
                     smoothedRenderToPresentTicks = 0;
                     nextPresentationTimestamp = currentTimestamp;
                 }
@@ -246,17 +273,14 @@ internal static class Program
                     if (Math.Abs(currentRefreshRate - displayRefreshRate) > 0.01)
                     {
                         displayRefreshRate = currentRefreshRate;
-                        basePresentationRefreshDivisor = GetPresentationRefreshDivisor(settings.RenderFrameRate, displayRefreshRate);
-                        presentationRefreshDivisor = basePresentationRefreshDivisor;
+                        presentationRefreshDivisor = GetPresentationRefreshDivisor(settings.RenderFrameRate, displayRefreshRate);
                         presentationFrameRate = GetPresentationFrameRate(settings.RenderFrameRate, displayRefreshRate, presentationRefreshDivisor);
                         verticalSyncEnabled = TrySetPresentationVSync(
                             renderer,
                             displayRefreshRate,
-                            presentationRefreshDivisor);
+                            presentationRefreshDivisor,
+                            presentationFrameRate);
                         configuredRenderRate = settings.RenderFrameRate;
-                        consecutiveOverBudgetFrames = 0;
-                        consecutiveUnderBudgetFrames = 0;
-                        smoothedFrameWorkTicks = 0;
                         smoothedRenderToPresentTicks = 0;
                         nextPresentationTimestamp = currentTimestamp;
                     }
@@ -406,9 +430,6 @@ internal static class Program
                     }
 
                     frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
-                    consecutiveOverBudgetFrames = 0;
-                    consecutiveUnderBudgetFrames = 0;
-                    smoothedFrameWorkTicks = 0;
                     previousTimestamp = Stopwatch.GetTimestamp();
                     nextPresentationTimestamp = previousTimestamp;
                     elapsedSeconds = 0;
@@ -435,28 +456,26 @@ internal static class Program
             if (settings.RenderFrameRate != configuredRenderRate)
             {
                 configuredRenderRate = settings.RenderFrameRate;
-                basePresentationRefreshDivisor = GetPresentationRefreshDivisor(configuredRenderRate, displayRefreshRate);
-                presentationRefreshDivisor = basePresentationRefreshDivisor;
+                presentationRefreshDivisor = GetPresentationRefreshDivisor(configuredRenderRate, displayRefreshRate);
                 presentationFrameRate = GetPresentationFrameRate(configuredRenderRate, displayRefreshRate, presentationRefreshDivisor);
                 verticalSyncEnabled = TrySetPresentationVSync(
                     renderer,
                     displayRefreshRate,
-                    presentationRefreshDivisor);
-                consecutiveOverBudgetFrames = 0;
-                consecutiveUnderBudgetFrames = 0;
-                smoothedFrameWorkTicks = 0;
+                    presentationRefreshDivisor,
+                    presentationFrameRate);
                 smoothedRenderToPresentTicks = 0;
                 nextPresentationTimestamp = presentationTimestamp;
             }
 
-            var renderIntervalTicks = Math.Max(1, (long)Math.Round(Stopwatch.Frequency / presentationFrameRate));
-            var renderRequested = presentationTimestamp >= nextPresentationTimestamp;
-            var presentedFrameWorkTicks = 0L;
-            var presentedFrameWorkStart = renderRequested ? Stopwatch.GetTimestamp() : 0L;
+            // Software pacing prepares the next frame immediately, then waits at
+            // presentation. Starting the rasterizer at the deadline adds its varying
+            // cost to every frame interval and needlessly loses slots on small overruns.
+            var renderRequested = !verticalSyncEnabled || presentationTimestamp >= nextPresentationTimestamp;
             var presentedFrameRendererStart = 0L;
 
             if (cpuRunner is not null)
             {
+                var emulationWorkStartTimestamp = Stopwatch.GetTimestamp();
                 try
                 {
                     var frameDuration = 1.0 / loadedRom!.Header.FrameRateHz;
@@ -482,12 +501,18 @@ internal static class Program
                         }
                     }
 
+                    emulationTicksSinceLastPresentation += Stopwatch.GetTimestamp() - emulationWorkStartTimestamp;
+                    emulationWorkStartTimestamp = 0;
+
                     if (renderRequested)
                     {
                         var renderTimestamp = Stopwatch.GetTimestamp();
                         var timeSinceLoopStart = (double)(renderTimestamp - currentTimestamp) / Stopwatch.Frequency;
+                        var predictedRenderToPresentTicks = verticalSyncEnabled
+                            ? smoothedRenderToPresentTicks
+                            : Math.Max(smoothedRenderToPresentTicks, nextPresentationTimestamp - renderTimestamp);
                         var interpolationProgress = (float)Math.Clamp(
-                            (frameAccumulator + timeSinceLoopStart + (smoothedRenderToPresentTicks / (double)Stopwatch.Frequency)) / frameDuration,
+                            (frameAccumulator + timeSinceLoopStart + (predictedRenderToPresentTicks / (double)Stopwatch.Frequency)) / frameDuration,
                             0.0,
                             1.0);
                         presentedFrameRendererStart = Stopwatch.GetTimestamp();
@@ -499,6 +524,7 @@ internal static class Program
                         {
                             statusMessage = $"Could not update the game frame: {SDL.GetError()}";
                         }
+                        gameRenderTicksSinceLastPresentation += Stopwatch.GetTimestamp() - presentedFrameRendererStart;
                     }
                 }
                 catch (Exception exception) when (exception is NotSupportedException or InvalidOperationException)
@@ -510,6 +536,13 @@ internal static class Program
                     }
                     cpuRunner = null;
                     frameAccumulator = 0;
+                }
+                finally
+                {
+                    if (emulationWorkStartTimestamp != 0)
+                    {
+                        emulationTicksSinceLastPresentation += Stopwatch.GetTimestamp() - emulationWorkStartTimestamp;
+                    }
                 }
             }
             else
@@ -531,6 +564,7 @@ internal static class Program
                 launchButton = GetLaunchButton(gameArea);
                 settingsButton = GetSettingsButton(outputWidth);
                 settingsPanel = GetSettingsPanel(outputWidth, outputHeight);
+                var drawStartTimestamp = Stopwatch.GetTimestamp();
                 SDL.SetRenderDrawColor(renderer, 8, 11, 18, 255);
                 SDL.RenderClear(renderer);
 
@@ -557,24 +591,96 @@ internal static class Program
                         loadedRom?.Header.FrameRateHz,
                         statusMessage,
                         audioError,
-                        verticalSyncEnabled);
+                        verticalSyncEnabled,
+                        displayRefreshRate,
+                        timingDisplay);
                 }
 
-                if (presentedFrameWorkStart != 0)
-                {
-                    // RenderPresent may wait for a VSync interval. Keep that scanout wait
-                    // out of the workload estimate used to choose a presentation rate.
-                    presentedFrameWorkTicks = Stopwatch.GetTimestamp() - presentedFrameWorkStart;
-                }
+                drawTicksSinceLastPresentation += Stopwatch.GetTimestamp() - drawStartTimestamp;
+                if (!verticalSyncEnabled)
+                    pacerWaitTicksSinceLastPresentation += WaitUntil(nextPresentationTimestamp);
+                var presentStartTimestamp = Stopwatch.GetTimestamp();
                 SDL.RenderPresent(renderer);
-                if (presentedFrameWorkTicks != 0)
-                {
-                    smoothedFrameWorkTicks = smoothedFrameWorkTicks == 0
-                        ? presentedFrameWorkTicks
-                        : smoothedFrameWorkTicks + ((presentedFrameWorkTicks - smoothedFrameWorkTicks) / 16);
-                }
 
                 var presentedTimestamp = Stopwatch.GetTimestamp();
+                presentTicksSinceLastPresentation += presentedTimestamp - presentStartTimestamp;
+                if (lastPresentedTimestamp != 0)
+                {
+                    var sample = new PresentationTimingSample
+                    {
+                        IntervalTicks = presentedTimestamp - lastPresentedTimestamp,
+                        EmulationTicks = emulationTicksSinceLastPresentation,
+                        GameRenderTicks = gameRenderTicksSinceLastPresentation,
+                        DrawTicks = drawTicksSinceLastPresentation,
+                        PresentTicks = presentTicksSinceLastPresentation,
+                        WaitTicks = pacerWaitTicksSinceLastPresentation,
+                    };
+                    presentationSamples[nextPresentationIntervalIndex] = sample;
+                    nextPresentationIntervalIndex = (nextPresentationIntervalIndex + 1) % presentationSamples.Length;
+                    presentationIntervalCount = Math.Min(presentationIntervalCount + 1, presentationSamples.Length);
+
+                    long totalIntervalTicks = 0;
+                    long longestIntervalTicks = 0;
+                    long totalEmulationTicks = 0;
+                    long totalGameRenderTicks = 0;
+                    long totalDrawTicks = 0;
+                    long totalPresentTicks = 0;
+                    long totalWaitTicks = 0;
+                    long peakEmulationTicks = 0;
+                    long peakGameRenderTicks = 0;
+                    long peakPresentTicks = 0;
+                    foreach (var timingSample in presentationSamples)
+                    {
+                        if (timingSample.IntervalTicks == 0)
+                        {
+                            continue;
+                        }
+
+                        totalIntervalTicks += timingSample.IntervalTicks;
+                        longestIntervalTicks = Math.Max(longestIntervalTicks, timingSample.IntervalTicks);
+                        totalEmulationTicks += timingSample.EmulationTicks;
+                        totalGameRenderTicks += timingSample.GameRenderTicks;
+                        totalDrawTicks += timingSample.DrawTicks;
+                        totalPresentTicks += timingSample.PresentTicks;
+                        totalWaitTicks += timingSample.WaitTicks;
+                        peakEmulationTicks = Math.Max(peakEmulationTicks, timingSample.EmulationTicks);
+                        peakGameRenderTicks = Math.Max(peakGameRenderTicks, timingSample.GameRenderTicks);
+                        peakPresentTicks = Math.Max(peakPresentTicks, timingSample.PresentTicks);
+                    }
+
+                    measuredPresentedFrameRate = totalIntervalTicks > 0
+                        ? presentationIntervalCount * (double)Stopwatch.Frequency / totalIntervalTicks
+                        : 0;
+                    longestPresentationIntervalMilliseconds =
+                        longestIntervalTicks * 1_000.0 / Stopwatch.Frequency;
+                    var sampleCount = Math.Max(1, presentationIntervalCount);
+                    meanEmulationMilliseconds = ToMilliseconds(totalEmulationTicks / sampleCount);
+                    meanGameRenderMilliseconds = ToMilliseconds(totalGameRenderTicks / sampleCount);
+                    meanDrawMilliseconds = ToMilliseconds(totalDrawTicks / sampleCount);
+                    meanPresentMilliseconds = ToMilliseconds(totalPresentTicks / sampleCount);
+                    meanPacerWaitMilliseconds = ToMilliseconds(totalWaitTicks / sampleCount);
+                    var classifiedTicks = totalEmulationTicks + totalGameRenderTicks + totalDrawTicks + totalPresentTicks + totalWaitTicks;
+                    meanOtherMilliseconds = ToMilliseconds(Math.Max(0, (totalIntervalTicks - classifiedTicks) / sampleCount));
+                    peakEmulationMilliseconds = ToMilliseconds(peakEmulationTicks);
+                    peakGameRenderMilliseconds = ToMilliseconds(peakGameRenderTicks);
+                    peakPresentMilliseconds = ToMilliseconds(peakPresentTicks);
+                    if (presentedTimestamp >= nextTimingDisplayUpdate)
+                    {
+                        timingDisplay = new FrameTimingDisplay(
+                            $"Output: {measuredPresentedFrameRate:0.0} FPS · longest gap: {longestPresentationIntervalMilliseconds:0.0} ms",
+                            $"Avg ms: CPU {meanEmulationMilliseconds:0.0} · game {meanGameRenderMilliseconds:0.0} · draw {meanDrawMilliseconds:0.0}",
+                            $"Present {meanPresentMilliseconds:0.0} · wait {meanPacerWaitMilliseconds:0.0} · other {meanOtherMilliseconds:0.0} ms",
+                            $"Peak ms: CPU {peakEmulationMilliseconds:0.0} · game {peakGameRenderMilliseconds:0.0} · present {peakPresentMilliseconds:0.0}");
+                        nextTimingDisplayUpdate = presentedTimestamp + Stopwatch.Frequency / 4;
+                    }
+                }
+                lastPresentedTimestamp = presentedTimestamp;
+                emulationTicksSinceLastPresentation = 0;
+                gameRenderTicksSinceLastPresentation = 0;
+                drawTicksSinceLastPresentation = 0;
+                presentTicksSinceLastPresentation = 0;
+                pacerWaitTicksSinceLastPresentation = 0;
+
                 if (presentedFrameRendererStart != 0)
                 {
                     var rendererToPresentTicks = presentedTimestamp - presentedFrameRendererStart;
@@ -583,78 +689,23 @@ internal static class Program
                         : smoothedRenderToPresentTicks + ((rendererToPresentTicks - smoothedRenderToPresentTicks) / 8);
                 }
 
-                var targetIntervalTicks = renderIntervalTicks;
-                if (cpuRunner is not null && displayRefreshRate > 0)
-                {
-                    if (smoothedFrameWorkTicks > targetIntervalTicks * 0.90)
-                    {
-                        consecutiveOverBudgetFrames++;
-                        consecutiveUnderBudgetFrames = 0;
-                    }
-                    else
-                    {
-                        consecutiveOverBudgetFrames = 0;
-                        // Smooth occasional OS/driver spikes and require meaningful headroom
-                        // before climbing back up. Consecutive raw-frame checks could never
-                        // recover on a workload with intermittent slow frames.
-                        if (smoothedFrameWorkTicks < targetIntervalTicks * 0.60)
-                        {
-                            consecutiveUnderBudgetFrames++;
-                        }
-                        else
-                        {
-                            consecutiveUnderBudgetFrames = 0;
-                        }
-                    }
-
-                    if (consecutiveOverBudgetFrames >= 30)
-                    {
-                        var slowerRefreshDivisor = Math.Max(
-                            basePresentationRefreshDivisor,
-                            presentationRefreshDivisor + 1);
-                        var slowerPresentationFrameRate = GetPresentationFrameRate(
-                            configuredRenderRate,
-                            displayRefreshRate,
-                            slowerRefreshDivisor);
-                        if (slowerPresentationFrameRate < presentationFrameRate - 0.01)
-                        {
-                            presentationRefreshDivisor = slowerRefreshDivisor;
-                            presentationFrameRate = slowerPresentationFrameRate;
-                            verticalSyncEnabled = TrySetPresentationVSync(
-                                renderer,
-                                displayRefreshRate,
-                                presentationRefreshDivisor);
-                            nextPresentationTimestamp = presentedTimestamp;
-                        }
-
-                        consecutiveOverBudgetFrames = 0;
-                        consecutiveUnderBudgetFrames = 0;
-                    }
-                    else if (consecutiveUnderBudgetFrames >= 180
-                        && presentationRefreshDivisor > basePresentationRefreshDivisor)
-                    {
-                        presentationRefreshDivisor--;
-                        presentationFrameRate = GetPresentationFrameRate(
-                            configuredRenderRate,
-                            displayRefreshRate,
-                            presentationRefreshDivisor);
-                        verticalSyncEnabled = TrySetPresentationVSync(
-                            renderer,
-                            displayRefreshRate,
-                            presentationRefreshDivisor);
-                        consecutiveUnderBudgetFrames = 0;
-                        nextPresentationTimestamp = presentedTimestamp;
-                    }
-                }
-
                 var updatedRenderIntervalTicks = Math.Max(1, (long)Math.Round(Stopwatch.Frequency / presentationFrameRate));
                 nextPresentationTimestamp += updatedRenderIntervalTicks;
-                if (nextPresentationTimestamp < presentedTimestamp)
+                if (!verticalSyncEnabled)
                 {
-                    // If rendering missed its slot, continue as soon as the work finishes.
-                    // Advancing to the next future slot here adds a full extra interval after
-                    // every slow frame and can cut the effective frame rate in half.
-                    nextPresentationTimestamp = presentedTimestamp;
+                    // A small overrun can recover at the next scheduled present.
+                    // Only restart the clock after a stall longer than a whole slot.
+                    if (presentedTimestamp - nextPresentationTimestamp > updatedRenderIntervalTicks)
+                        nextPresentationTimestamp = presentedTimestamp + updatedRenderIntervalTicks;
+                }
+                else if (nextPresentationTimestamp <= presentedTimestamp)
+                {
+                    // Skip missed deadlines while keeping the presentation cadence on its
+                    // original phase. Restarting from now can cause catch-up frames to
+                    // bunch together after a slow frame.
+                    var overdueTicks = presentedTimestamp - nextPresentationTimestamp;
+                    var missedIntervals = (overdueTicks / updatedRenderIntervalTicks) + 1;
+                    nextPresentationTimestamp += missedIntervals * updatedRenderIntervalTicks;
                 }
             }
 
@@ -666,10 +717,9 @@ internal static class Program
             }
 
             var timeUntilNextPresentation = nextPresentationTimestamp - timestampAfterPresent;
-            if (timeUntilNextPresentation > 0)
+            if (verticalSyncEnabled && timeUntilNextPresentation > 0)
             {
-                var delayNanoseconds = (ulong)(timeUntilNextPresentation * 1_000_000_000.0 / Stopwatch.Frequency);
-                SDL.DelayPrecise(delayNanoseconds);
+                pacerWaitTicksSinceLastPresentation += WaitUntil(nextPresentationTimestamp);
             }
         }
 
@@ -718,7 +768,37 @@ internal static class Program
         }
 
         var softwareRateLimit = Math.Min(configuredRate, MaximumSoftwarePresentationRate);
-        return Math.Max(1, (int)Math.Ceiling(displayRefreshRate / softwareRateLimit));
+        var refreshRateTolerance = GetRefreshRateTolerance(softwareRateLimit);
+        if (displayRefreshRate < softwareRateLimit - refreshRateTolerance)
+        {
+            return 0;
+        }
+
+        var nearestDivisor = Math.Max(1, (int)Math.Round(displayRefreshRate / softwareRateLimit));
+        if (Math.Abs((displayRefreshRate / nearestDivisor) - softwareRateLimit)
+            <= refreshRateTolerance)
+        {
+            return nearestDivisor;
+        }
+
+        // Preserve the configured cap when the display cannot present at an exact
+        // integer refresh interval. The software pacer handles those fractional rates.
+        return Math.Max(1, (int)Math.Floor(displayRefreshRate / softwareRateLimit));
+    }
+
+    private static double ToMilliseconds(long ticks)
+    {
+        return ticks * 1_000.0 / Stopwatch.Frequency;
+    }
+
+    private static long WaitUntil(long deadlineTimestamp)
+    {
+        var startTimestamp = Stopwatch.GetTimestamp();
+        var remainingTicks = deadlineTimestamp - startTimestamp;
+        if (remainingTicks <= 0) return 0;
+        var nanoseconds = (ulong)(remainingTicks * 1_000_000_000.0 / Stopwatch.Frequency);
+        SDL.DelayPrecise(nanoseconds);
+        return Stopwatch.GetTimestamp() - startTimestamp;
     }
 
     private static double GetPresentationFrameRate(int configuredRate, double displayRefreshRate, int refreshDivisor)
@@ -736,25 +816,47 @@ internal static class Program
     private static bool TrySetPresentationVSync(
         IntPtr renderer,
         double displayRefreshRate,
-        int refreshDivisor)
+        int refreshDivisor,
+        double presentationFrameRate)
     {
-        var requestedInterval = double.IsFinite(displayRefreshRate)
-            && displayRefreshRate > 0
-            && refreshDivisor > 0
-                ? refreshDivisor
-                : 1;
-        if (SDL.SetRenderVSync(renderer, requestedInterval))
+        if (!double.IsFinite(displayRefreshRate)
+            || displayRefreshRate <= 0
+            || refreshDivisor <= 0
+            || !double.IsFinite(presentationFrameRate))
         {
-            return true;
+            SDL.SetRenderVSync(renderer, 0);
+            return false;
         }
 
-        if (requestedInterval != 1 && SDL.SetRenderVSync(renderer, 1))
+        // At high refresh rates, a missed VSync deadline can hold presentation to
+        // the next scanout and cut the effective rate in half. Use the precise
+        // software pacer above 90 FPS so a single missed scanout does not become a cap.
+        if (presentationFrameRate > MaximumVSyncPresentationRate)
+        {
+            SDL.SetRenderVSync(renderer, 0);
+            return false;
+        }
+
+        var synchronizedFrameRate = displayRefreshRate / refreshDivisor;
+        if (Math.Abs(synchronizedFrameRate - presentationFrameRate)
+            > GetRefreshRateTolerance(presentationFrameRate))
+        {
+            SDL.SetRenderVSync(renderer, 0);
+            return false;
+        }
+
+        if (SDL.SetRenderVSync(renderer, refreshDivisor))
         {
             return true;
         }
 
         SDL.SetRenderVSync(renderer, 0);
         return false;
+    }
+
+    private static double GetRefreshRateTolerance(double frameRate)
+    {
+        return Math.Max(0.25, frameRate * 0.005);
     }
 
     private static void DrawLaunchScreen(
@@ -1098,7 +1200,9 @@ internal static class Program
         double? gameFrameRate,
         string statusMessage,
         string audioError,
-        bool verticalSyncEnabled)
+        bool verticalSyncEnabled,
+        double displayRefreshRate,
+        FrameTimingDisplay timingDisplay)
     {
         SDL.SetRenderDrawColor(renderer, 8, 11, 18, 248);
         SDL.RenderFillRect(renderer, in panel);
@@ -1131,10 +1235,26 @@ internal static class Program
             DrawText(renderer, textRenderer, "Display settings do not change physics.",
                 panel.X + 20, panel.Y + 300, 12, MakeUiColor(181, 194, 211));
 
+            DrawText(renderer, textRenderer, timingDisplay.Output,
+                panel.X + 20, panel.Y + 324, 12, MakeUiColor(181, 194, 211));
+            var displayRefreshText = displayRefreshRate > 0
+                ? $"Display refresh: {displayRefreshRate:0.##} Hz"
+                : "Display refresh: unavailable";
+            DrawText(renderer, textRenderer, displayRefreshText,
+                panel.X + 20, panel.Y + 344, 12, MakeUiColor(181, 194, 211));
+            DrawText(renderer, textRenderer,
+                timingDisplay.Work,
+                panel.X + 20, panel.Y + 368, 11, MakeUiColor(181, 194, 211));
+            DrawText(renderer, textRenderer,
+                timingDisplay.Wait,
+                panel.X + 20, panel.Y + 386, 11, MakeUiColor(181, 194, 211));
+            DrawText(renderer, textRenderer,
+                timingDisplay.Peak,
+                panel.X + 20, panel.Y + 404, 11, MakeUiColor(181, 194, 211));
             var systemStatus = !string.IsNullOrWhiteSpace(audioError)
                 ? audioError
                 : !verticalSyncEnabled
-                    ? "Vertical sync is unavailable on this display."
+                    ? "Vertical sync is off; software frame pacing is active."
                     : statusMessage.StartsWith("Execution stopped", StringComparison.Ordinal)
                         || statusMessage.StartsWith("Could not", StringComparison.Ordinal)
                             ? statusMessage
