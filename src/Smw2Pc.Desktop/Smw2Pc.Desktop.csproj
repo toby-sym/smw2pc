@@ -10,10 +10,10 @@
 
   <ItemGroup>
     <PackageReference Include="SDL3-CS" Version="3.4.18.0" />
-    <PackageReference Include="SDL3-CS.MacOS" Version="3.4.18.0" />
-    <PackageReference Include="SDL3-CS.MacOS.TTF" Version="3.2.2.13" />
-    <PackageReference Include="SDL3-CS.Windows" Version="3.4.18.0" />
-    <PackageReference Include="SDL3-CS.Windows.TTF" Version="3.2.2.13" />
+    <PackageReference Include="SDL3-CS.MacOS" Version="3.4.18.0" Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('osx-'))" />
+    <PackageReference Include="SDL3-CS.MacOS.TTF" Version="3.2.2.13" Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('osx-'))" />
+    <PackageReference Include="SDL3-CS.Windows" Version="3.4.18.0" Condition="'$(RuntimeIdentifier)' == '' or $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win-'))" />
+    <PackageReference Include="SDL3-CS.Windows.TTF" Version="3.2.2.13" Condition="'$(RuntimeIdentifier)' == '' or $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win-'))" />
   </ItemGroup>
 
   <ItemGroup>
