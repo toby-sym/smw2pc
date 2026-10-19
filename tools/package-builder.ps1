@@ -18,8 +18,8 @@ if (-not $RuntimeIdentifier) {
     else { $RuntimeIdentifier = "win-x64" }
 }
 if ($RuntimeIdentifier -notin @("win-x64", "osx-x64", "osx-arm64")) { throw "Unsupported package runtime identifier: $RuntimeIdentifier" }
-$isMacOS = $RuntimeIdentifier.StartsWith("osx-")
-if (($isMacOS -and -not $hostIsMacOS) -or (-not $isMacOS -and -not $hostIsWindows)) {
+$targetIsMacOS = $RuntimeIdentifier.StartsWith("osx-")
+if (($targetIsMacOS -and -not $hostIsMacOS) -or (-not $targetIsMacOS -and -not $hostIsWindows)) {
     throw "Package $RuntimeIdentifier on its matching native operating system."
 }
 $outputPath = if ([IO.Path]::IsPathRooted($OutputDirectory)) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $repositoryRoot $OutputDirectory }
@@ -50,7 +50,7 @@ dotnet restore $crossgenProject "-p:CrossgenVersion=$runtimeVersion" "-p:Crossge
 if ($LASTEXITCODE -ne 0) { throw "The .NET $runtimeVersion ReadyToRun compiler restore failed." }
 $crossgenPackageName = "microsoft.netcore.app.crossgen2.$RuntimeIdentifier"
 $crossgenPackage = Join-Path $nugetRoot (Join-Path $crossgenPackageName $runtimeVersion)
-$crossgenExecutable = if ($isMacOS) { "crossgen2" } else { "crossgen2.exe" }
+$crossgenExecutable = if ($targetIsMacOS) { "crossgen2" } else { "crossgen2.exe" }
 if (-not (Test-Path -LiteralPath (Join-Path $crossgenPackage "tools/$crossgenExecutable"))) {
     throw "The .NET $runtimeVersion ReadyToRun compiler package for $RuntimeIdentifier is missing."
 }
@@ -59,16 +59,16 @@ New-Item -ItemType Directory -Force -Path $crossgenPayload | Out-Null
 Copy-Item -Path (Join-Path $crossgenPackage "tools/*") -Destination $crossgenPayload -Recurse
 
 $hostPackPath = Join-Path $dotnetRoot "packs/Microsoft.NETCore.App.Host.$RuntimeIdentifier/$runtimeVersion/runtimes/$RuntimeIdentifier/native"
-$singleFileHostName = if ($isMacOS) { "singlefilehost" } else { "singlefilehost.exe" }
+$singleFileHostName = if ($targetIsMacOS) { "singlefilehost" } else { "singlefilehost.exe" }
 $singleFileHostCandidates = @(
     (Join-Path $hostPackPath $singleFileHostName),
     (Join-Path $nugetRoot "microsoft.netcore.app.host.$RuntimeIdentifier/$runtimeVersion/runtimes/$RuntimeIdentifier/native/$singleFileHostName")
 )
 $singleFileHost = $singleFileHostCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $singleFileHost) { throw "The .NET $runtimeVersion single-file host for $RuntimeIdentifier is missing." }
-$appHostName = if ($isMacOS) { "apphost" } else { "apphost.exe" }
+$appHostName = if ($targetIsMacOS) { "apphost" } else { "apphost.exe" }
 Copy-Item -LiteralPath $singleFileHost -Destination (Join-Path $payloadPath $appHostName)
-if ($isMacOS) { & chmod +x (Join-Path $crossgenPayload $crossgenExecutable) (Join-Path $payloadPath $appHostName) }
+if ($targetIsMacOS) { & chmod +x (Join-Path $crossgenPayload $crossgenExecutable) (Join-Path $payloadPath $appHostName) }
 
 foreach ($project in @(@{ Name = "Smw2Pc.Core"; Folder = "core" }, @{ Name = "Smw2Pc.Desktop"; Folder = "desktop" })) {
     $sourceRoot = Join-Path $repositoryRoot ("src/" + $project.Name)
@@ -91,7 +91,7 @@ dotnet publish (Join-Path $repositoryRoot "src/Smw2Pc.Builder/Smw2Pc.Builder.csp
     -p:PublishReadyToRun=true -p:DebugType=None -p:DebugSymbols=false "-p:Version=$Version" "-p:BuilderPayloadPath=$payloadZip"
 if ($LASTEXITCODE -ne 0) { throw "ROM builder publishing failed." }
 
-if ($isMacOS) {
+if ($targetIsMacOS) {
     $appPath = Join-Path $packagePath "SMW2PC.app"
     $contentsPath = Join-Path $appPath "Contents"
     $macOSPath = Join-Path $contentsPath "MacOS"
@@ -133,7 +133,7 @@ Copy-Item -LiteralPath (Join-Path $repositoryRoot "licenses/Microsoft-MIT.txt") 
 Copy-Item -LiteralPath (Join-Path $crossgenPackage "LICENSE.TXT") -Destination (Join-Path $packagePath "licenses/Crossgen2-MIT.txt")
 Copy-Item -LiteralPath (Join-Path $crossgenPackage "THIRD-PARTY-NOTICES.TXT") -Destination (Join-Path $packagePath "licenses/Crossgen2-THIRD-PARTY-NOTICES.TXT")
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "assets/fonts/OFL.txt") -Destination (Join-Path $packagePath "licenses")
-if ($isMacOS) {
+if ($targetIsMacOS) {
     @"
 SMW2PC $Version for macOS ($($RuntimeIdentifier.Replace('osx-', '')))
 
@@ -162,7 +162,7 @@ Build errors are recorded in %LOCALAPPDATA%\SMW2PC\build.log.
 
 $archivePath = Join-Path $outputPath "SMW2PC-$Version-$RuntimeIdentifier.zip"
 if (Test-Path -LiteralPath $archivePath) { throw "Package already exists: $archivePath" }
-if ($isMacOS) {
+if ($targetIsMacOS) {
     & /usr/bin/ditto -c -k --sequesterRsrc $packagePath $archivePath
     if ($LASTEXITCODE -ne 0) { throw "Could not create the macOS archive." }
 }
