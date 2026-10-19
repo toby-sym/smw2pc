@@ -897,6 +897,18 @@ public static partial class SnesVideoRenderer
         var sampleY = (int)MathF.Round(
             screenY + verticalOffset + sampleShiftY,
             MidpointRounding.AwayFromZero);
+        var tileShift = tileWidth == 8 ? 3 : 4;
+        var worldY = sampleY & (pixelHeight - 1);
+        var cellY = worldY >> tileShift;
+        var rowY = worldY & (tileHeight - 1);
+        var modeZeroPaletteBase = mode == 0 ? background * 32 : 0;
+        var firstPixel = screenY * Width;
+        var tileCache = activeTileDecodeCache!;
+        var cachedSegment = -1;
+        var drawSegment = false;
+        var horizontalFlip = false;
+        var paletteBase = 0;
+        ReadOnlySpan<byte> tileRow = default;
         for (var screenX = 0; screenX < Width; screenX++)
         {
             if (hasActiveWindow && IsLayerWindowed(scanlineRegisters, background, subScreen, screenX))
@@ -907,100 +919,42 @@ public static partial class SnesVideoRenderer
             var sampleX = (int)MathF.Round(
                 screenX + horizontalOffset + sampleShiftX,
                 MidpointRounding.AwayFromZero);
-            var pixelIndex = (screenY * Width) + screenX;
-            if (TrySampleBackgroundColor(
-                sampleX,
-                sampleY,
-                pixelWidth,
-                pixelHeight,
-                tileWidth,
-                tileHeight,
-                mapBase,
-                mapWidth,
-                characterBase,
-                bytesPerTile,
-                bitsPerPixel,
-                priority,
-                mode,
-                background,
-                videoRam,
-                colorRam,
-                out var sampledColor))
+            var worldX = sampleX & (pixelWidth - 1);
+            var segment = worldX >> 3;
+            if (segment != cachedSegment)
             {
-                WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, ReadColor(sampledColor, brightness, forcedBlank: false));
-                pixelColors[pixelIndex] = sampledColor;
-                pixelSources[pixelIndex] = (byte)(background + 1);
+                // Map entries, palette selection and tile decoding are shared by
+                // an eight-pixel row. Keep exact per-pixel scroll rounding at its edges.
+                cachedSegment = segment;
+                var mapIndex = GetMapByteIndex(mapBase, mapWidth, worldX >> tileShift, cellY);
+                var entry = videoRam[mapIndex] | (videoRam[mapIndex + 1] << 8);
+                drawSegment = priority < 0 || ((entry >> 13) & 1) == priority;
+                if (drawSegment)
+                {
+                    horizontalFlip = (entry & 0x4000) != 0;
+                    var localX = worldX & (tileWidth - 1);
+                    var localY = rowY;
+                    if (horizontalFlip) localX = tileWidth - 1 - localX;
+                    if ((entry & 0x8000) != 0) localY = tileHeight - 1 - localY;
+                    var tileNumber = entry & 0x03FF;
+                    if (tileWidth == 16)
+                        tileNumber += ((localY >> 3) * 16) + (localX >> 3);
+                    var address = (characterBase + tileNumber * bytesPerTile) & 0xFFFF;
+                    tileRow = tileCache.ReadRow(videoRam, address, bitsPerPixel, localY & 7);
+                    paletteBase = modeZeroPaletteBase + (((entry >> 10) & 7) << bitsPerPixel);
+                }
             }
-        }
-    }
 
-    private static bool TrySampleBackgroundColor(
-        int worldX,
-        int worldY,
-        int pixelWidth,
-        int pixelHeight,
-        int tileWidth,
-        int tileHeight,
-        int mapBase,
-        int mapWidth,
-        int characterBase,
-        int bytesPerTile,
-        int bitsPerPixel,
-        int priority,
-        int mode,
-        int background,
-        ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam,
-        out ushort colorValue)
-    {
-        // SNES tilemaps use power-of-two dimensions (32 or 64 tiles in each axis),
-        // so masking and shifts preserve negative wrapping without per-pixel division.
-        worldX &= pixelWidth - 1;
-        worldY &= pixelHeight - 1;
-        var tileShift = tileWidth == 8 ? 3 : 4;
-        var cellX = worldX >> tileShift;
-        var cellY = worldY >> tileShift;
-        var localX = worldX & (tileWidth - 1);
-        var localY = worldY & (tileHeight - 1);
-        var mapIndex = GetMapByteIndex(mapBase, mapWidth, cellX, cellY);
-        var tileEntry = (ushort)(videoRam[mapIndex] | (videoRam[mapIndex + 1] << 8));
-        if (priority >= 0 && ((tileEntry & 0x2000) != 0) != (priority != 0))
-        {
-            colorValue = 0;
-            return false;
+            if (!drawSegment) continue;
+            var localPixelX = worldX & 7;
+            var paletteIndex = tileRow[horizontalFlip ? 7 - localPixelX : localPixelX];
+            if (paletteIndex == 0) continue;
+            var sampledColor = ReadColorValue(colorRam, paletteBase + paletteIndex);
+            var pixelIndex = firstPixel + screenX;
+            WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, ReadColor(sampledColor, brightness, forcedBlank: false));
+            pixelColors[pixelIndex] = sampledColor;
+            pixelSources[pixelIndex] = (byte)(background + 1);
         }
-
-        if ((tileEntry & 0x4000) != 0)
-        {
-            localX = tileWidth - 1 - localX;
-        }
-
-        if ((tileEntry & 0x8000) != 0)
-        {
-            localY = tileHeight - 1 - localY;
-        }
-
-        var tileNumber = tileEntry & 0x03FF;
-        if (tileWidth == 16)
-        {
-            tileNumber += ((localY >> 3) * 16) + (localX >> 3);
-            localX &= 7;
-            localY &= 7;
-        }
-
-        var tileAddress = (characterBase + (tileNumber * bytesPerTile)) & 0xFFFF;
-        var paletteIndex = ReadTilePixel(videoRam, tileAddress, bitsPerPixel, localX, localY);
-        if (paletteIndex == 0)
-        {
-            colorValue = 0;
-            return false;
-        }
-
-        var paletteGroup = (tileEntry >> 10) & 0x07;
-        var modeZeroPaletteBase = mode == 0 ? background * 32 : 0;
-        var colorIndex = modeZeroPaletteBase + (paletteGroup * (1 << bitsPerPixel)) + paletteIndex;
-        colorValue = ReadColorValue(colorRam, colorIndex);
-        return true;
     }
 
     private static int GetMapByteIndex(int mapBase, int mapWidth, int cellX, int cellY)
@@ -1060,6 +1014,19 @@ public static partial class SnesVideoRenderer
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int ReadPixel(ReadOnlySpan<byte> videoRam, int tileAddress, int bitsPerPixel, int x, int y)
         {
+            var offset = GetTilePixelOffset(videoRam, tileAddress, bitsPerPixel);
+            return decodedPixels[offset + (y * 8) + x];
+        }
+
+        public ReadOnlySpan<byte> ReadRow(ReadOnlySpan<byte> videoRam, int tileAddress, int bitsPerPixel, int y)
+        {
+            var offset = GetTilePixelOffset(videoRam, tileAddress, bitsPerPixel);
+            return decodedPixels.AsSpan(offset + (y * 8), 8);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int GetTilePixelOffset(ReadOnlySpan<byte> videoRam, int tileAddress, int bitsPerPixel)
+        {
             var isTwoBpp = bitsPerPixel == 2;
             var tileIndex = (tileAddress >> (isTwoBpp ? 4 : 5)) & (isTwoBpp
                 ? TwoBppTileCount - 1
@@ -1085,7 +1052,7 @@ public static partial class SnesVideoRenderer
                 }
             }
 
-            return decodedPixels[pixelOffset + (y * 8) + x];
+            return pixelOffset;
         }
 
         private static void DecodeTile(
