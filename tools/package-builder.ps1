@@ -7,8 +7,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$isWindows = $RuntimeIdentifier.StartsWith("win-")
-$currentPlatformMatches = ($isWindows -and $env:OS -eq "Windows_NT") -or (-not $isWindows -and $IsLinux)
+$targetIsWindows = $RuntimeIdentifier.StartsWith("win-")
+$currentPlatformMatches = ($targetIsWindows -and $env:OS -eq "Windows_NT") -or (-not $targetIsWindows -and $IsLinux)
 if (-not $currentPlatformMatches) { throw "Build $RuntimeIdentifier packages on a matching Windows or Linux runner." }
 if (-not $Version) {
     [xml] $versionFile = Get-Content -LiteralPath (Join-Path $repositoryRoot "Version.props") -Raw
@@ -20,8 +20,8 @@ $workPath = Join-Path (Join-Path $repositoryRoot "artifacts/builder-package") ([
 $payloadPath = Join-Path $workPath "payload"
 $templatePath = Join-Path $payloadPath "player"
 $packagePath = Join-Path $workPath "distribution"
-$builderName = if ($isWindows) { "SMW2PC.exe" } else { "SMW2PC" }
-$playerName = if ($isWindows) { "SMW.exe" } else { "SMW" }
+$builderName = if ($targetIsWindows) { "SMW2PC.exe" } else { "SMW2PC" }
+$playerName = if ($targetIsWindows) { "SMW.exe" } else { "SMW" }
 New-Item -ItemType Directory -Force -Path $templatePath, $packagePath, $outputPath | Out-Null
 
 dotnet publish (Join-Path $repositoryRoot "src/Smw2Pc.Desktop/Smw2Pc.Desktop.csproj") `
@@ -48,26 +48,26 @@ $crossgenProject = Join-Path $repositoryRoot "tools/CrossgenCompiler/CrossgenCom
 dotnet restore $crossgenProject "-p:CrossgenVersion=$runtimeVersion" "-p:CrossgenRuntimeIdentifier=$RuntimeIdentifier"
 if ($LASTEXITCODE -ne 0) { throw "The .NET $runtimeVersion ReadyToRun compiler restore failed." }
 $crossgenPackage = Join-Path (Join-Path $nugetRoot "microsoft.netcore.app.crossgen2.$RuntimeIdentifier") $runtimeVersion
-$crossgenName = if ($isWindows) { "crossgen2.exe" } else { "crossgen2" }
+$crossgenName = if ($targetIsWindows) { "crossgen2.exe" } else { "crossgen2" }
 if (-not (Test-Path -LiteralPath (Join-Path $crossgenPackage "tools/$crossgenName"))) {
     throw "The .NET $runtimeVersion ReadyToRun compiler package is missing for $RuntimeIdentifier."
 }
 $crossgenPayload = Join-Path $payloadPath "crossgen2"
 New-Item -ItemType Directory -Force -Path $crossgenPayload | Out-Null
 Copy-Item -Path (Join-Path $crossgenPackage "tools/*") -Destination $crossgenPayload -Recurse
-if (-not $isWindows) {
+if (-not $targetIsWindows) {
     $crossgenExecutable = Join-Path $crossgenPayload $crossgenName
     $mode = [IO.File]::GetUnixFileMode($crossgenExecutable)
     [IO.File]::SetUnixFileMode($crossgenExecutable,
         $mode -bor [IO.UnixFileMode]::UserExecute -bor [IO.UnixFileMode]::GroupExecute -bor [IO.UnixFileMode]::OtherExecute)
 }
 $hostCandidates = @(
-    (Join-Path $dotnetRoot "packs/Microsoft.NETCore.App.Host.$RuntimeIdentifier/$runtimeVersion/runtimes/$RuntimeIdentifier/native/singlefilehost$(if ($isWindows) { '.exe' })"),
-    (Join-Path $nugetRoot "microsoft.netcore.app.host.$RuntimeIdentifier/$runtimeVersion/runtimes/$RuntimeIdentifier/native/singlefilehost$(if ($isWindows) { '.exe' })")
+    (Join-Path $dotnetRoot "packs/Microsoft.NETCore.App.Host.$RuntimeIdentifier/$runtimeVersion/runtimes/$RuntimeIdentifier/native/singlefilehost$(if ($targetIsWindows) { '.exe' })"),
+    (Join-Path $nugetRoot "microsoft.netcore.app.host.$RuntimeIdentifier/$runtimeVersion/runtimes/$RuntimeIdentifier/native/singlefilehost$(if ($targetIsWindows) { '.exe' })")
 )
 $hostPath = $hostCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $hostPath) { throw "The single-file host for .NET $runtimeVersion ($RuntimeIdentifier) is missing." }
-Copy-Item -LiteralPath $hostPath -Destination (Join-Path $payloadPath "apphost$(if ($isWindows) { '.exe' })")
+Copy-Item -LiteralPath $hostPath -Destination (Join-Path $payloadPath "apphost$(if ($targetIsWindows) { '.exe' })")
 
 foreach ($project in @(@{ Name = "Smw2Pc.Core"; Folder = "core" }, @{ Name = "Smw2Pc.Desktop"; Folder = "desktop" })) {
     $sourceRoot = Join-Path $repositoryRoot ("src/" + $project.Name)
@@ -92,7 +92,7 @@ dotnet publish (Join-Path $repositoryRoot "src/Smw2Pc.Builder/Smw2Pc.Builder.csp
 if ($LASTEXITCODE -ne 0) { throw "ROM builder publishing failed." }
 
 $builderPath = Join-Path $packagePath $builderName
-if (-not $isWindows) {
+if (-not $targetIsWindows) {
     [IO.File]::SetUnixFileMode($builderPath,
         [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute -bor
         [IO.UnixFileMode]::GroupRead -bor [IO.UnixFileMode]::GroupExecute -bor
@@ -118,10 +118,10 @@ $playerName contains your compiled game and the libraries it needs.
 Build errors are recorded in the SMW2PC build log in your user data folder.
 "@ | Set-Content -LiteralPath (Join-Path $packagePath "README.txt") -Encoding UTF8
 
-$archiveExtension = if ($isWindows) { "zip" } else { "tar.gz" }
+$archiveExtension = if ($targetIsWindows) { "zip" } else { "tar.gz" }
 $archivePath = Join-Path $outputPath "SMW2PC-$Version-$RuntimeIdentifier.$archiveExtension"
 if (Test-Path -LiteralPath $archivePath) { throw "Package already exists: $archivePath" }
-if ($isWindows) {
+if ($targetIsWindows) {
     [IO.Compression.ZipFile]::CreateFromDirectory($packagePath, $archivePath, [IO.Compression.CompressionLevel]::Optimal, $false)
 } else {
     & tar -czf $archivePath -C $packagePath .

@@ -16,17 +16,17 @@ if ($Archive.EndsWith(".tar.gz", [StringComparison]::OrdinalIgnoreCase)) {
     Expand-Archive -LiteralPath $Archive -DestinationPath $testDirectory
 }
 
-$isWindows = $RuntimeIdentifier.StartsWith("win-")
-$builderName = if ($isWindows) { "SMW2PC.exe" } else { "SMW2PC" }
-$gameName = if ($isWindows) { "SMW.exe" } else { "SMW" }
+$targetIsWindows = $RuntimeIdentifier.StartsWith("win-")
+$builderName = if ($targetIsWindows) { "SMW2PC.exe" } else { "SMW2PC" }
+$gameName = if ($targetIsWindows) { "SMW.exe" } else { "SMW" }
 $builder = Join-Path $testDirectory $builderName
 if (-not (Test-Path -LiteralPath $builder)) { throw "Builder executable is missing from the package." }
-$builderVersion = if ($isWindows) {
+$builderVersion = if ($targetIsWindows) {
     (Get-Item -LiteralPath $builder).VersionInfo.ProductVersion.Split('+')[0]
 } else {
     (& $builder --version).Trim()
 }
-$versionCheckSucceeded = $isWindows -or $LASTEXITCODE -eq 0
+$versionCheckSucceeded = $targetIsWindows -or $LASTEXITCODE -eq 0
 if (-not $versionCheckSucceeded -or $builderVersion -ne $Version) { throw "Packaged executable version does not match the artifact." }
 if (Get-ChildItem -LiteralPath $testDirectory -Recurse -File | Where-Object { $_.Extension -in @('.sfc', '.smc') }) { throw "A ROM was included in the distribution." }
 
@@ -72,7 +72,7 @@ $romPath = Join-Path $testDirectory "synthetic fixture.sfc"
 $savedPath = $env:PATH
 $savedRoot = $env:DOTNET_ROOT
 try {
-    $env:PATH = if ($isWindows) { Join-Path $env:SystemRoot "System32" } else { "/usr/bin:/bin" }
+    $env:PATH = if ($targetIsWindows) { Join-Path $env:SystemRoot "System32" } else { "/usr/bin:/bin" }
     $env:DOTNET_ROOT = Join-Path $testDirectory "no-installed-sdk"
     Invoke-PackagedProcess $builder @('--build', $romPath, '--output', $testDirectory) | Out-Null
     $game = Join-Path $testDirectory $gameName
