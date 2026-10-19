@@ -2,9 +2,11 @@ using SDL3;
 
 internal sealed class UiTextRenderer : IDisposable
 {
+    private const int MaximumCachedTextures = 256;
     private readonly IntPtr renderer;
     private readonly Dictionary<(int Size, bool Bold), IntPtr> fonts = [];
     private readonly Dictionary<TextKey, TextTexture> textures = [];
+    private readonly LinkedList<TextKey> textureUsage = [];
     private bool disposed;
 
     private UiTextRenderer(IntPtr renderer, string fontPath)
@@ -101,6 +103,8 @@ internal sealed class UiTextRenderer : IDisposable
         var key = new TextKey(text, pixelSize, bold, color.R, color.G, color.B, color.A);
         if (textures.TryGetValue(key, out var existingTexture))
         {
+            textureUsage.Remove(existingTexture.UsageNode);
+            textureUsage.AddLast(existingTexture.UsageNode);
             return existingTexture;
         }
 
@@ -129,7 +133,15 @@ internal sealed class UiTextRenderer : IDisposable
         }
 
         SDL.SetTextureScaleMode(texture, SDL.ScaleMode.Linear);
-        var entry = new TextTexture(texture, width, height);
+        if (textures.Count >= MaximumCachedTextures)
+        {
+            var oldest = textureUsage.First!;
+            textureUsage.RemoveFirst();
+            if (textures.Remove(oldest.Value, out var evicted))
+                SDL.DestroyTexture(evicted.Texture);
+        }
+        var usageNode = textureUsage.AddLast(key);
+        var entry = new TextTexture(texture, width, height, usageNode);
         textures.Add(key, entry);
         return entry;
     }
@@ -151,6 +163,8 @@ internal sealed class UiTextRenderer : IDisposable
         {
             SDL.DestroyTexture(entry.Texture);
         }
+        textures.Clear();
+        textureUsage.Clear();
 
         foreach (var font in fonts.Values)
         {
@@ -169,5 +183,5 @@ internal sealed class UiTextRenderer : IDisposable
         byte Blue,
         byte Alpha);
 
-    private sealed record TextTexture(IntPtr Texture, float Width, float Height);
+    private sealed record TextTexture(IntPtr Texture, float Width, float Height, LinkedListNode<TextKey> UsageNode);
 }
