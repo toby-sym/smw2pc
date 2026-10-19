@@ -9,7 +9,7 @@ $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $testDirectory = Join-Path $repositoryRoot ("artifacts/package-tests/" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $testDirectory | Out-Null
 
-function Invoke-PackagedProcess([string] $Executable, [string[]] $Arguments, [string] $WorkingDirectory, [Nullable[int]] $TimeoutMs) {
+function Invoke-PackagedProcess([string] $Executable, [string[]] $Arguments, [string] $WorkingDirectory, [int] $TimeoutMs = 0) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $Executable
     $start.WorkingDirectory = $WorkingDirectory
@@ -22,7 +22,7 @@ function Invoke-PackagedProcess([string] $Executable, [string[]] $Arguments, [st
     if (-not $process.Start()) { throw "Could not start packaged executable: $Executable" }
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    if ($null -ne $TimeoutMs -and -not $process.WaitForExit($TimeoutMs.Value)) {
+    if ($TimeoutMs -gt 0 -and -not $process.WaitForExit($TimeoutMs)) {
         $process.Kill($true)
         throw "Packaged executable timed out: $Executable"
     }
@@ -52,7 +52,7 @@ if ($RuntimeIdentifier -eq "win-x64") {
     if ((Get-Item -LiteralPath $builder).VersionInfo.ProductVersion.Split('+')[0] -ne $Version) { throw "Packaged executable version does not match the artifact." }
 }
 else {
-    $versionCheck = Invoke-PackagedProcess $builder @("--version") $testDirectory $null
+    $versionCheck = Invoke-PackagedProcess $builder @("--version") $testDirectory
     if ($versionCheck.ExitCode -ne 0 -or $versionCheck.Stdout.Trim() -ne $Version) { throw "Packaged executable version does not match the artifact." }
     $mode = [IO.File]::GetUnixFileMode($builder)
     if (($mode -band [IO.UnixFileMode]::UserExecute) -eq 0) { throw "The builder app lost its executable permission in the archive." }
