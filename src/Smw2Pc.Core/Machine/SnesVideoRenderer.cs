@@ -1,5 +1,7 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Smw2Pc.Core.Machine;
 
@@ -13,10 +15,13 @@ public static partial class SnesVideoRenderer
     private const int TilePixels = 8 * 8;
     private const int TwoBppTileCount = 0x10000 / 16;
     private const int FourBppTileCount = 0x10000 / 32;
+    private static readonly uint[] BrightnessColors = CreateBrightnessColors();
     [ThreadStatic]
     private static TileDecodeCache? activeTileDecodeCache;
     [ThreadStatic]
     private static TileDecodeCache? reusableTileDecodeCache;
+    [ThreadStatic]
+    private static BackgroundSampleCache? backgroundSampleCache;
 
     public static void RenderFrame(SnesHardware hardware, Span<byte> rgbaPixels, float interpolationProgress = 0f)
     {
@@ -61,12 +66,8 @@ public static partial class SnesVideoRenderer
                 var forcedBlank = (registers[0] & 0x80) != 0;
                 var backdrop = ReadColor(backdropColor, brightness, forcedBlank);
                 var firstPixel = screenY * Width;
-                for (var screenX = 0; screenX < Width; screenX++)
-                {
-                    var pixel = firstPixel + screenX;
-                    WriteColor(rgbaPixels, pixel * BytesPerPixel, backdrop);
-                    pixelColors[pixel] = backdropColor;
-                }
+                FillScanline(rgbaPixels, screenY, backdrop);
+                pixelColors.Slice(firstPixel, Width).Fill(backdropColor);
 
                 if (!forcedBlank)
                 {
@@ -313,10 +314,7 @@ public static partial class SnesVideoRenderer
                 subColors = ArrayPool<ushort>.Shared.Rent(mainSources.Length);
                 subSources.AsSpan(0, mainSources.Length).Clear();
                 var backdropColor = ReadColorValue(colorRam, 0);
-                for (var pixel = 0; pixel < Width * Height; pixel++)
-                {
-                    subColors[pixel] = backdropColor;
-                }
+                subColors.AsSpan(0, Width * Height).Fill(backdropColor);
 
                 for (var screenY = 0; screenY < Height; screenY++)
                 {
@@ -325,11 +323,7 @@ public static partial class SnesVideoRenderer
                     var brightness = scanlineRegisters[0] & 0x0F;
                     var forcedBlank = (scanlineRegisters[0] & 0x80) != 0;
                     var backdrop = ReadColor(backdropColor, brightness, forcedBlank);
-                    var firstPixel = screenY * Width;
-                    for (var screenX = 0; screenX < Width; screenX++)
-                    {
-                        WriteColor(subPixels, (firstPixel + screenX) * BytesPerPixel, backdrop);
-                    }
+                    FillScanline(subPixels, screenY, backdrop);
 
                     if (!forcedBlank)
                     {
@@ -608,15 +602,25 @@ public static partial class SnesVideoRenderer
 
     private static uint ReadColor(ushort color, int brightness, bool forcedBlank)
     {
-        if (forcedBlank)
-        {
-            return 0xFF000000;
-        }
+        return forcedBlank ? 0xFF000000 : BrightnessColors[(brightness << 15) | (color & 0x7FFF)];
+    }
 
-        var red = ScaleChannel(color & 0x1F, brightness);
-        var green = ScaleChannel((color >> 5) & 0x1F, brightness);
-        var blue = ScaleChannel((color >> 10) & 0x1F, brightness);
-        return 0xFF000000u | ((uint)blue << 16) | ((uint)green << 8) | (uint)red;
+    private static uint[] CreateBrightnessColors()
+    {
+        // There are only 32,768 SNES colors and 16 brightness levels. This table
+        // replaces three channel expansions and divisions at every visible pixel.
+        var colors = new uint[16 * 0x8000];
+        for (var brightness = 0; brightness < 16; brightness++)
+        {
+            for (var color = 0; color < 0x8000; color++)
+            {
+                var red = ScaleChannel(color & 0x1F, brightness);
+                var green = ScaleChannel((color >> 5) & 0x1F, brightness);
+                var blue = ScaleChannel((color >> 10) & 0x1F, brightness);
+                colors[(brightness << 15) | color] = 0xFF000000u | ((uint)blue << 16) | ((uint)green << 8) | (uint)red;
+            }
+        }
+        return colors;
     }
 
     private static void DrawModeOneLayers(
@@ -904,6 +908,8 @@ public static partial class SnesVideoRenderer
         var modeZeroPaletteBase = mode == 0 ? background * 32 : 0;
         var firstPixel = screenY * Width;
         var tileCache = activeTileDecodeCache!;
+        var sampleCache = backgroundSampleCache ??= new BackgroundSampleCache();
+        var sampleColumns = sampleCache.GetColumns(background, horizontalOffset, pixelWidth, sampleShiftX);
         var cachedSegment = -1;
         var drawSegment = false;
         var horizontalFlip = false;
@@ -916,10 +922,7 @@ public static partial class SnesVideoRenderer
                 continue;
             }
 
-            var sampleX = (int)MathF.Round(
-                screenX + horizontalOffset + sampleShiftX,
-                MidpointRounding.AwayFromZero);
-            var worldX = sampleX & (pixelWidth - 1);
+            var worldX = sampleColumns[screenX];
             var segment = worldX >> 3;
             if (segment != cachedSegment)
             {
@@ -962,6 +965,27 @@ public static partial class SnesVideoRenderer
         var quadrant = (cellX >> 5) + ((cellY >> 5) * (mapWidth >> 5));
         var cellInQuadrant = ((cellY & 31) * 32) + (cellX & 31);
         return (mapBase + (quadrant * 0x800) + (cellInQuadrant * 2)) & 0xFFFF;
+    }
+
+    private sealed class BackgroundSampleCache
+    {
+        private readonly int[] columns = new int[4 * Width];
+        private readonly (int Offset, int PixelWidth, float Shift)[] keys = new (int, int, float)[4];
+
+        public ReadOnlySpan<int> GetColumns(int background, int offset, int pixelWidth, float shift)
+        {
+            var key = (offset, pixelWidth, shift);
+            var samples = columns.AsSpan(background * Width, Width);
+            if (keys[background] != key)
+            {
+                for (var x = 0; x < Width; x++)
+                {
+                    samples[x] = (int)MathF.Round(x + offset + shift, MidpointRounding.AwayFromZero) & (pixelWidth - 1);
+                }
+                keys[background] = key;
+            }
+            return samples;
+        }
     }
 
     private static int ReadTilePixel(
@@ -1090,9 +1114,12 @@ public static partial class SnesVideoRenderer
 
     private static void WriteColor(Span<byte> rgbaPixels, int index, uint color)
     {
-        rgbaPixels[index] = (byte)color;
-        rgbaPixels[index + 1] = (byte)(color >> 8);
-        rgbaPixels[index + 2] = (byte)(color >> 16);
-        rgbaPixels[index + 3] = 0xFF;
+        BinaryPrimitives.WriteUInt32LittleEndian(rgbaPixels[index..], color | 0xFF000000);
+    }
+
+    private static void FillScanline(Span<byte> pixels, int scanline, uint color)
+    {
+        var nativeColor = BitConverter.IsLittleEndian ? color : BinaryPrimitives.ReverseEndianness(color);
+        MemoryMarshal.Cast<byte, uint>(pixels.Slice(scanline * Width * BytesPerPixel, Width * BytesPerPixel)).Fill(nativeColor);
     }
 }
