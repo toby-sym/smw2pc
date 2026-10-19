@@ -81,6 +81,16 @@ internal static class GameBuilder
                 Directory.GetFiles(Path.Combine(workspace, "source", "desktop"), "*.cs", SearchOption.AllDirectories),
                 playerPath, playerReferences, resources, true, cancellationToken);
 
+            var readyToRunDirectory = Path.Combine(workspace, "ready-to-run");
+            Directory.CreateDirectory(readyToRunDirectory);
+            Log("Precompiling translated game code for Windows x64...");
+            var coreImage = Path.Combine(readyToRunDirectory, "Smw2Pc.Core.dll");
+            await CompileReadyToRun(corePath, coreImage, template, workspace, Log, cancellationToken);
+            File.Move(coreImage, corePath, overwrite: true);
+            var playerImage = Path.Combine(readyToRunDirectory, "SMW.dll");
+            await CompileReadyToRun(playerPath, playerImage, template, workspace, Log, cancellationToken);
+            File.Move(playerImage, playerPath, overwrite: true);
+
             Log("Creating portable SMW.exe...");
             var host = Path.Combine(template, "SMW.exe");
             HostWriter.CreateAppHost(Path.Combine(workspace, "apphost.exe"), host, "SMW.dll",
@@ -182,6 +192,49 @@ internal static class GameBuilder
         {
             await Task.WhenAll(Drain(process.StandardOutput), Drain(process.StandardError), process.WaitForExitAsync(cancellationToken));
             if (process.ExitCode != 0) throw new InvalidDataException("The compiled player failed verification. See the build log.");
+        }
+        catch
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            throw;
+        }
+    }
+
+    private static async Task CompileReadyToRun(string assemblyPath, string outputPath, string template,
+        string workspace, Action<string> log, CancellationToken cancellationToken)
+    {
+        var compiler = Path.Combine(workspace, "crossgen2", "crossgen2.exe");
+        if (!File.Exists(compiler))
+            throw new FileNotFoundException("The bundled .NET ReadyToRun compiler is missing.", compiler);
+
+        var start = new ProcessStartInfo(compiler)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = template,
+        };
+        start.ArgumentList.Add("--targetos");
+        start.ArgumentList.Add("windows");
+        start.ArgumentList.Add("--targetarch");
+        start.ArgumentList.Add("x64");
+        start.ArgumentList.Add("--optimize-time");
+        start.ArgumentList.Add($"-r:{Path.Combine(template, "*.dll")}");
+        start.ArgumentList.Add("--out");
+        start.ArgumentList.Add(outputPath);
+        start.ArgumentList.Add(assemblyPath);
+
+        using var process = Process.Start(start) ?? throw new IOException("Could not start the ReadyToRun compiler.");
+        async Task Drain(StreamReader reader)
+        {
+            while (await reader.ReadLineAsync(cancellationToken) is { } line) log(line);
+        }
+        try
+        {
+            await Task.WhenAll(Drain(process.StandardOutput), Drain(process.StandardError), process.WaitForExitAsync(cancellationToken));
+            if (process.ExitCode != 0)
+                throw new InvalidDataException("ReadyToRun compilation failed. See the build log.");
         }
         catch
         {
