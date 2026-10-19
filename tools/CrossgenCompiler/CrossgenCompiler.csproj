@@ -2,8 +2,9 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <CrossgenVersion Condition="'$(CrossgenVersion)' == ''">10.0.0</CrossgenVersion>
+    <CrossgenRuntimeIdentifier Condition="'$(CrossgenRuntimeIdentifier)' == ''">win-x64</CrossgenRuntimeIdentifier>
   </PropertyGroup>
   <ItemGroup>
-    <PackageDownload Include="Microsoft.NETCore.App.Crossgen2.win-x64" Version="[$(CrossgenVersion)]" />
+    <PackageDownload Include="Microsoft.NETCore.App.Crossgen2.$(CrossgenRuntimeIdentifier)" Version="[$(CrossgenVersion)]" />
   </ItemGroup>
 </Project>

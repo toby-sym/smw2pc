@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -21,8 +22,7 @@ internal static class GameBuilder
     public static async Task<string> BuildAsync(string romPath, string outputDirectory,
         Action<string>? progress = null, CancellationToken cancellationToken = default)
     {
-        if (!OperatingSystem.IsWindows() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
-            throw new PlatformNotSupportedException("The ROM builder requires 64-bit Windows.");
+        var target = GetTarget();
         if (!new[] { ".sfc", ".smc" }.Contains(Path.GetExtension(romPath), StringComparer.OrdinalIgnoreCase))
             throw new ArgumentException("Select a Super Mario World .sfc or .smc ROM.", nameof(romPath));
         Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
@@ -49,6 +49,12 @@ internal static class GameBuilder
                 ?? throw new InvalidDataException("Builder files are missing. Create the distribution with tools/package-builder.ps1."))
             using (var archive = new ZipArchive(resource, ZipArchiveMode.Read))
                 archive.ExtractToDirectory(workspace);
+            if (OperatingSystem.IsMacOS())
+            {
+                var crossgenCompiler = Path.Combine(workspace, "crossgen2", "crossgen2");
+                File.SetUnixFileMode(crossgenCompiler,
+                    File.GetUnixFileMode(crossgenCompiler) | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+            }
 
             var generated = Path.Combine(workspace, "generated");
             RomCompilation.Generate(romPath, generated, log: Log, cancellationToken: cancellationToken);
@@ -83,25 +89,35 @@ internal static class GameBuilder
 
             var readyToRunDirectory = Path.Combine(workspace, "ready-to-run");
             Directory.CreateDirectory(readyToRunDirectory);
-            Log("Precompiling translated game code for Windows x64...");
+            Log($"Precompiling translated game code for {target.DisplayName}...");
             var coreImage = Path.Combine(readyToRunDirectory, "Smw2Pc.Core.dll");
-            await CompileReadyToRun(corePath, coreImage, template, workspace, Log, cancellationToken);
+            await CompileReadyToRun(corePath, coreImage, template, workspace, target, Log, cancellationToken);
             File.Move(coreImage, corePath, overwrite: true);
             var playerImage = Path.Combine(readyToRunDirectory, "SMW.dll");
-            await CompileReadyToRun(playerPath, playerImage, template, workspace, Log, cancellationToken);
+            await CompileReadyToRun(playerPath, playerImage, template, workspace, target, Log, cancellationToken);
             File.Move(playerImage, playerPath, overwrite: true);
 
-            Log("Creating portable SMW.exe...");
-            var host = Path.Combine(template, "SMW.exe");
-            HostWriter.CreateAppHost(Path.Combine(workspace, "apphost.exe"), host, "SMW.dll",
-                windowsGraphicalUserInterface: true, assemblyToCopyResourcesFrom: playerPath);
+            Log($"Creating portable {target.OutputName}...");
+            var appHostName = target.IsWindows ? "apphost.exe" : "apphost";
+            var host = Path.Combine(template, target.ExecutableName);
+            HostWriter.CreateAppHost(Path.Combine(workspace, appHostName), host, "SMW.dll",
+                windowsGraphicalUserInterface: target.IsWindows, assemblyToCopyResourcesFrom: playerPath);
+            if (OperatingSystem.IsMacOS())
+                File.SetUnixFileMode(host, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                    | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
             var bundleDirectory = Path.Combine(workspace, "bundle");
             Directory.CreateDirectory(bundleDirectory);
-            var bundler = new Bundler("SMW.exe", bundleDirectory,
-                BundleOptions.BundleAllContent, OSPlatform.Windows, Architecture.X64, new Version(10, 0));
+            var bundler = new Bundler(target.ExecutableName, bundleDirectory,
+                BundleOptions.BundleAllContent, target.BundleOS, target.Architecture, target.MinimumOSVersion);
             var files = Directory.GetFiles(template, "*", SearchOption.AllDirectories)
                 .Select(path => new FileSpec(path, Path.GetRelativePath(template, path))).ToList();
             var executable = bundler.GenerateBundle(files);
+            if (target.IsMacOS && OperatingSystem.IsMacOS())
+            {
+                var appBundle = Path.Combine(workspace, "SMW.app");
+                CreateMacAppBundle(executable, appBundle, "SMW", "SMW2PC", "com.smw2pc.game", playerVersion);
+                executable = Path.Combine(appBundle, "Contents", "MacOS", "SMW");
+            }
             cancellationToken.ThrowIfCancellationRequested();
             Log("Checking player dependencies...");
             await RunCheck(executable, ["--verify-native"], Log, cancellationToken);
@@ -110,10 +126,22 @@ internal static class GameBuilder
             cancellationToken.ThrowIfCancellationRequested();
 
             Directory.CreateDirectory(outputDirectory);
-            var destination = Path.Combine(Path.GetFullPath(outputDirectory), "SMW.exe");
-            replacement = Path.Combine(outputDirectory, $".SMW-{Guid.NewGuid():N}.tmp");
-            File.Copy(executable, replacement);
-            File.Move(replacement, destination, overwrite: true);
+            var destination = Path.Combine(Path.GetFullPath(outputDirectory), target.OutputName);
+            if (target.IsMacOS && OperatingSystem.IsMacOS())
+            {
+                replacement = Path.Combine(Path.GetFullPath(outputDirectory), $".SMW.app-{Guid.NewGuid():N}.tmp");
+                Directory.CreateDirectory(replacement);
+                CopyDirectory(Path.Combine(workspace, "SMW.app"), replacement);
+                ReplaceDirectory(replacement, destination);
+                replacement = null;
+            }
+            else
+            {
+                replacement = Path.Combine(outputDirectory, $".SMW-{Guid.NewGuid():N}.tmp");
+                File.Copy(executable, replacement);
+                File.Move(replacement, destination, overwrite: true);
+                replacement = null;
+            }
             Log($"Created {destination}");
             return destination;
         }
@@ -124,7 +152,7 @@ internal static class GameBuilder
         }
         finally
         {
-            if (replacement is not null) TryDeleteFile(replacement);
+            if (replacement is not null) TryDelete(replacement);
             try { Directory.Delete(workspace, recursive: true); }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
@@ -160,8 +188,11 @@ internal static class GameBuilder
             [assembly: System.Reflection.AssemblyInformationalVersion("{{informationalVersion}}")]
             [assembly: System.Reflection.AssemblyProduct("SMW2PC")]
             """, parseOptions));
+        var outputKind = application
+            ? OperatingSystem.IsWindows() ? OutputKind.WindowsApplication : OutputKind.ConsoleApplication
+            : OutputKind.DynamicallyLinkedLibrary;
         var compilation = CSharpCompilation.Create(name, trees, references,
-            new CSharpCompilationOptions(application ? OutputKind.WindowsApplication : OutputKind.DynamicallyLinkedLibrary,
+            new CSharpCompilationOptions(outputKind,
                 optimizationLevel: OptimizationLevel.Release, nullableContextOptions: NullableContextOptions.Enable));
         // Release the template DLL before emitting its ROM-specific replacement.
         using var outputStream = File.Create(output);
@@ -201,9 +232,9 @@ internal static class GameBuilder
     }
 
     private static async Task CompileReadyToRun(string assemblyPath, string outputPath, string template,
-        string workspace, Action<string> log, CancellationToken cancellationToken)
+        string workspace, BuildTarget target, Action<string> log, CancellationToken cancellationToken)
     {
-        var compiler = Path.Combine(workspace, "crossgen2", "crossgen2.exe");
+        var compiler = Path.Combine(workspace, "crossgen2", OperatingSystem.IsWindows() ? "crossgen2.exe" : "crossgen2");
         if (!File.Exists(compiler))
             throw new FileNotFoundException("The bundled .NET ReadyToRun compiler is missing.", compiler);
 
@@ -216,9 +247,9 @@ internal static class GameBuilder
             WorkingDirectory = template,
         };
         start.ArgumentList.Add("--targetos");
-        start.ArgumentList.Add("windows");
+        start.ArgumentList.Add(target.CrossgenOS);
         start.ArgumentList.Add("--targetarch");
-        start.ArgumentList.Add("x64");
+        start.ArgumentList.Add(target.CrossgenArchitecture);
         start.ArgumentList.Add("--optimize-time");
         start.ArgumentList.Add($"-r:{Path.Combine(template, "*.dll")}");
         start.ArgumentList.Add("--out");
@@ -243,9 +274,89 @@ internal static class GameBuilder
         }
     }
 
-    private static void TryDeleteFile(string path)
+    private sealed record BuildTarget(string RuntimeIdentifier, string CrossgenOS, string CrossgenArchitecture,
+        Architecture Architecture, OSPlatform BundleOS, Version MinimumOSVersion, bool IsWindows, bool IsMacOS,
+        string ExecutableName, string OutputName, string DisplayName);
+
+    private static BuildTarget GetTarget()
     {
-        try { File.Delete(path); }
+        if (OperatingSystem.IsWindows() && RuntimeInformation.ProcessArchitecture == Architecture.X64)
+            return new("win-x64", "windows", "x64", Architecture.X64, OSPlatform.Windows,
+                new Version(10, 0), true, false, "SMW.exe", "SMW.exe", "Windows x64");
+        if (OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture is Architecture.X64 or Architecture.Arm64)
+        {
+            var architecture = RuntimeInformation.ProcessArchitecture;
+            return new($"osx-{(architecture == Architecture.Arm64 ? "arm64" : "x64")}", "osx",
+                architecture == Architecture.Arm64 ? "arm64" : "x64", architecture, OSPlatform.OSX,
+                new Version(13, 0), false, true, "SMW", "SMW.app", $"macOS {architecture}");
+        }
+        throw new PlatformNotSupportedException("The ROM builder supports Windows x64 and macOS x64/arm64.");
+    }
+
+    [SupportedOSPlatform("macos")]
+    private static void CreateMacAppBundle(string executable, string appBundle, string executableName,
+        string bundleName, string bundleIdentifier, Version version)
+    {
+        var macOSDirectory = Path.Combine(appBundle, "Contents", "MacOS");
+        Directory.CreateDirectory(macOSDirectory);
+        var appExecutable = Path.Combine(macOSDirectory, executableName);
+        File.Copy(executable, appExecutable);
+        File.SetUnixFileMode(appExecutable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        var bundleVersion = version.ToString(3);
+        var plist = $$"""
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+              <key>CFBundleExecutable</key><string>{{executableName}}</string>
+              <key>CFBundleIdentifier</key><string>{{bundleIdentifier}}</string>
+              <key>CFBundleName</key><string>{{bundleName}}</string>
+              <key>CFBundlePackageType</key><string>APPL</string>
+              <key>CFBundleShortVersionString</key><string>{{bundleVersion}}</string>
+              <key>CFBundleVersion</key><string>{{bundleVersion}}</string>
+              <key>NSHighResolutionCapable</key><true/>
+            </dict>
+            </plist>
+            """;
+        File.WriteAllText(Path.Combine(appBundle, "Contents", "Info.plist"), plist, new UTF8Encoding(false));
+    }
+
+    [SupportedOSPlatform("macos")]
+    private static void CopyDirectory(string source, string destination)
+    {
+        foreach (var directory in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
+            Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, directory)));
+        foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+        {
+            var target = Path.Combine(destination, Path.GetRelativePath(source, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target);
+            File.SetUnixFileMode(target, File.GetUnixFileMode(file));
+        }
+    }
+
+    private static void ReplaceDirectory(string replacement, string destination)
+    {
+        var backup = destination + $".{Guid.NewGuid():N}.bak";
+        var hadPrevious = Directory.Exists(destination);
+        if (hadPrevious) Directory.Move(destination, backup);
+        try { Directory.Move(replacement, destination); }
+        catch
+        {
+            if (hadPrevious && !Directory.Exists(destination)) Directory.Move(backup, destination);
+            throw;
+        }
+        if (hadPrevious) Directory.Delete(backup, recursive: true);
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+            else File.Delete(path);
+        }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
     }
