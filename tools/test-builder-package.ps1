@@ -8,6 +8,36 @@ $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $testDirectory = Join-Path $repositoryRoot ("artifacts/package-tests/" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $testDirectory | Out-Null
+
+function Invoke-PackagedProcess([string] $Executable, [string[]] $Arguments, [string] $WorkingDirectory, [Nullable[int]] $TimeoutMs) {
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $Executable
+    $start.WorkingDirectory = $WorkingDirectory
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    if (-not $process.Start()) { throw "Could not start packaged executable: $Executable" }
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    if ($null -ne $TimeoutMs -and -not $process.WaitForExit($TimeoutMs.Value)) {
+        $process.Kill($true)
+        throw "Packaged executable timed out: $Executable"
+    }
+    $process.WaitForExit()
+    return [pscustomobject]@{ ExitCode = $process.ExitCode; Stdout = $stdoutTask.GetAwaiter().GetResult(); Stderr = $stderrTask.GetAwaiter().GetResult() }
+}
+
+function Get-PathHash([string] $Path) {
+    if (Test-Path -LiteralPath $Path -PathType Leaf) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }
+    $parts = Get-ChildItem -LiteralPath $Path -File -Recurse | Sort-Object FullName | ForEach-Object {
+        "$(($_.FullName.Substring($Path.Length)).Replace('\', '/')):$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+    }
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($parts -join "`n"))))
+}
+
 if ($RuntimeIdentifier.StartsWith("osx-")) {
     & /usr/bin/ditto -x -k $Archive $testDirectory
     if ($LASTEXITCODE -ne 0) { throw "Could not extract the macOS package archive." }
@@ -69,32 +99,3 @@ try {
     Write-Host "Packaged $RuntimeIdentifier builder created and verified the compiled game without an installed SDK."
 }
 finally { $env:PATH = $savedPath; $env:DOTNET_ROOT = $savedRoot; $env:DYLD_LIBRARY_PATH = $savedDyld }
-
-function Invoke-PackagedProcess([string] $Executable, [string[]] $Arguments, [string] $WorkingDirectory, [Nullable[int]] $TimeoutMs) {
-    $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $Executable
-    $start.WorkingDirectory = $WorkingDirectory
-    $start.UseShellExecute = $false
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $start
-    if (-not $process.Start()) { throw "Could not start packaged executable: $Executable" }
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-    $stderrTask = $process.StandardError.ReadToEndAsync()
-    if ($null -ne $TimeoutMs -and -not $process.WaitForExit($TimeoutMs.Value)) {
-        $process.Kill($true)
-        throw "Packaged executable timed out: $Executable"
-    }
-    $process.WaitForExit()
-    return [pscustomobject]@{ ExitCode = $process.ExitCode; Stdout = $stdoutTask.GetAwaiter().GetResult(); Stderr = $stderrTask.GetAwaiter().GetResult() }
-}
-
-function Get-PathHash([string] $Path) {
-    if (Test-Path -LiteralPath $Path -PathType Leaf) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }
-    $parts = Get-ChildItem -LiteralPath $Path -File -Recurse | Sort-Object FullName | ForEach-Object {
-        "$(($_.FullName.Substring($Path.Length)).Replace('\', '/')):$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
-    }
-    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($parts -join "`n"))))
-}
