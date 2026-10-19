@@ -32,6 +32,16 @@ Copy-Item -Path (Join-Path $referencePack.FullName "ref\net10.0\*.dll") -Destina
 $runtimeConfig = Get-Content -LiteralPath (Join-Path $templatePath "SMW.runtimeconfig.json") -Raw | ConvertFrom-Json
 $runtimeVersion = ($runtimeConfig.runtimeOptions.includedFrameworks | Where-Object { $_.name -eq "Microsoft.NETCore.App" }).version
 $nugetRoot = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE ".nuget\packages" }
+$crossgenProject = Join-Path $repositoryRoot "tools\CrossgenCompiler\CrossgenCompiler.csproj"
+dotnet restore $crossgenProject "-p:CrossgenVersion=$runtimeVersion"
+if ($LASTEXITCODE -ne 0) { throw "The .NET $runtimeVersion ReadyToRun compiler restore failed." }
+$crossgenPackage = Join-Path $nugetRoot "microsoft.netcore.app.crossgen2.win-x64\$runtimeVersion"
+if (-not (Test-Path -LiteralPath (Join-Path $crossgenPackage "tools\crossgen2.exe"))) {
+    throw "The .NET $runtimeVersion ReadyToRun compiler package is missing."
+}
+$crossgenPayload = Join-Path $payloadPath "crossgen2"
+New-Item -ItemType Directory -Force -Path $crossgenPayload | Out-Null
+Copy-Item -Path (Join-Path $crossgenPackage "tools\*") -Destination $crossgenPayload -Recurse
 $hostCandidates = @(
     (Join-Path $dotnetRoot "packs\Microsoft.NETCore.App.Host.win-x64\$runtimeVersion\runtimes\win-x64\native\singlefilehost.exe"),
     (Join-Path $nugetRoot "microsoft.netcore.app.host.win-x64\$runtimeVersion\runtimes\win-x64\native\singlefilehost.exe")
@@ -67,6 +77,8 @@ if ($nativeCheck.ExitCode -ne 0) { throw "The packaged builder failed its SDL de
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "THIRD-PARTY-NOTICES.md") -Destination $packagePath
 New-Item -ItemType Directory -Force -Path (Join-Path $packagePath "licenses") | Out-Null
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "licenses\Microsoft-MIT.txt") -Destination (Join-Path $packagePath "licenses")
+Copy-Item -LiteralPath (Join-Path $crossgenPackage "LICENSE.TXT") -Destination (Join-Path $packagePath "licenses\Microsoft-Crossgen2-MIT.txt")
+Copy-Item -LiteralPath (Join-Path $crossgenPackage "THIRD-PARTY-NOTICES.TXT") -Destination (Join-Path $packagePath "licenses\Crossgen2-THIRD-PARTY-NOTICES.TXT")
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "assets\fonts\OFL.txt") -Destination (Join-Path $packagePath "licenses")
 @"
 SMW2PC $Version for Windows x64

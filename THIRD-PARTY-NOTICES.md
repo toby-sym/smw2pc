@@ -1,9 +1,10 @@
 # Third-party notices
 
 The Windows builder includes the Microsoft .NET runtime, Roslyn C# compiler,
-and .NET HostModel bundler, distributed under the MIT License. Their license
-is included in licenses/Microsoft-MIT.txt. Roslyn and HostModel build the local
-game executable; the generated player does not include either compiler.
+.NET HostModel bundler, and Crossgen2 ReadyToRun compiler, distributed under
+the MIT License. The compiler notices and license are included in the package's
+licenses folder. Roslyn builds the local game executable, and Crossgen2
+precompiles its game assemblies; the generated player includes neither tool.
 
 The SPC700 instruction timing table and APU behavior in the audio core were
 adapted with reference to spc700-js by Mitsutaka Okazaki
