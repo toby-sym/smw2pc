@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 
 namespace Smw2Pc.Core.Machine;
 
-public static class SnesVideoRenderer
+public static partial class SnesVideoRenderer
 {
     public const int Width = 256;
     public const int Height = 224;
@@ -41,6 +41,10 @@ public static class SnesVideoRenderer
         var tileDecodeCache = reusableTileDecodeCache ??= new TileDecodeCache();
         tileDecodeCache.BeginFrame();
         activeTileDecodeCache = tileDecodeCache;
+        var previousObjectCache = activeObjectCache;
+        var objectCache = reusableObjectCache ??= new ObjectRenderCache();
+        objectCache.Prepare(hardware, scrollInterpolationProgress);
+        activeObjectCache = objectCache;
         var pixelSourcesBuffer = ArrayPool<byte>.Shared.Rent(framePixelCount);
         var pixelColorsBuffer = ArrayPool<ushort>.Shared.Rent(framePixelCount);
 
@@ -114,6 +118,7 @@ public static class SnesVideoRenderer
         finally
         {
             activeTileDecodeCache = previousTileDecodeCache;
+            activeObjectCache = previousObjectCache;
             ArrayPool<byte>.Shared.Return(pixelSourcesBuffer);
             ArrayPool<ushort>.Shared.Return(pixelColorsBuffer);
         }
@@ -820,223 +825,6 @@ public static class SnesVideoRenderer
         {
             DrawObjects(hardware, registers, priority, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         }
-    }
-
-    private static void DrawObjects(
-        SnesHardware hardware,
-        ReadOnlySpan<byte> registers,
-        int priority,
-        int targetScanline,
-        bool subScreen,
-        int brightness,
-        Span<byte> rgbaPixels,
-        Span<byte> pixelSources,
-        Span<ushort> pixelColors,
-        ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam,
-        float interpolationProgress)
-    {
-        var objectRam = hardware.CurrentFrameObjectAttributeMemory.Span;
-        var previousObjectRam = hardware.PreviousObjectAttributeMemory.Span;
-        var hasPreviousObjectFrame = hardware.HasPreviousObjectAttributeFrame;
-        var objectSizeMode = (registers[1] >> 5) & 0x07;
-        var hasActiveWindow = HasActiveLayerWindow(registers, 4, subScreen);
-        var tileBase = (registers[1] & 0x07) * 0x4000;
-        var tileNameSelectOffset = (((registers[1] >> 3) & 0x03) + 1) * 0x2000;
-        var (smallSize, largeSize) = GetObjectSizes(objectSizeMode);
-
-        for (var objectIndex = 127; objectIndex >= 0; objectIndex--)
-        {
-            var objectAddress = objectIndex * 4;
-            var currentHighBits = (objectRam[512 + (objectIndex / 4)] >> ((objectIndex & 3) * 2)) & 0x03;
-            var currentXRaw = objectRam[objectAddress] | ((currentHighBits & 1) << 8);
-            var x = (float)(currentXRaw >= 256 ? currentXRaw - 512 : currentXRaw);
-            var y = (float)objectRam[objectAddress + 1];
-            var tile = objectRam[objectAddress + 2];
-            var attributes = objectRam[objectAddress + 3];
-            if (priority >= 0 && ((attributes >> 4) & 0x03) != priority)
-            {
-                continue;
-            }
-
-            if (hasPreviousObjectFrame && interpolationProgress < 1f)
-            {
-                var previousHighBits = (previousObjectRam[512 + (objectIndex / 4)] >> ((objectIndex & 3) * 2)) & 0x03;
-                var previousAttributes = previousObjectRam[objectAddress + 3];
-                var sameObject = ((previousAttributes ^ attributes) & 0x3F) == 0
-                    && ((previousHighBits ^ currentHighBits) & 0x02) == 0;
-                if (sameObject)
-                {
-                    var previousXRaw = previousObjectRam[objectAddress] | ((previousHighBits & 1) << 8);
-                    var previousX = previousXRaw >= 256 ? previousXRaw - 512 : previousXRaw;
-                    var xDelta = x - previousX;
-                    if (Math.Abs(xDelta) <= MaximumInterpolatedObjectDelta)
-                    {
-                        x = previousX + (xDelta * interpolationProgress);
-                    }
-
-                    var previousY = previousObjectRam[objectAddress + 1];
-                    var yDelta = (int)y - previousY;
-                    if (yDelta > 128)
-                    {
-                        yDelta -= 256;
-                    }
-                    else if (yDelta < -128)
-                    {
-                        yDelta += 256;
-                    }
-
-                    if (Math.Abs(yDelta) <= MaximumInterpolatedObjectDelta)
-                    {
-                        y = previousY + (yDelta * interpolationProgress);
-                    }
-                }
-            }
-
-            // Keep the SNES palette colors intact. Blending neighboring sprite pixels
-            // creates a colored trail around moving edges once the frame is upscaled.
-            x = MathF.Round(x, MidpointRounding.AwayFromZero);
-            y = MathF.Round(y, MidpointRounding.AwayFromZero);
-
-            var large = (currentHighBits & 2) != 0;
-            var objectSize = large ? largeSize : smallSize;
-
-            var palette = (attributes >> 1) & 0x07;
-            var horizontalFlip = (attributes & 0x40) != 0;
-            var verticalFlip = (attributes & 0x80) != 0;
-
-            var sourceY = targetScanline - y;
-            if (sourceY < -objectSize)
-            {
-                sourceY += 256;
-            }
-            else if (sourceY > objectSize)
-            {
-                sourceY -= 256;
-            }
-
-            if (sourceY <= -1f || sourceY >= objectSize)
-            {
-                continue;
-            }
-
-            var sourceY0 = (int)MathF.Floor(sourceY);
-            var sourceY1 = sourceY0 + 1;
-            var fractionY = sourceY - sourceY0;
-            var firstScreenX = Math.Max(0, (int)MathF.Floor(x) - 1);
-            var lastScreenX = Math.Min(Width, (int)MathF.Ceiling(x + objectSize) + 1);
-            for (var screenX = firstScreenX; screenX < lastScreenX; screenX++)
-            {
-                var sourceX = screenX - x;
-                if (sourceX <= -1f || sourceX >= objectSize)
-                {
-                    continue;
-                }
-
-                if (hasActiveWindow && IsLayerWindowed(registers, 4, subScreen, screenX))
-                {
-                    continue;
-                }
-
-                var sourceX0 = (int)MathF.Floor(sourceX);
-                var sourceX1 = sourceX0 + 1;
-                var fractionX = sourceX - sourceX0;
-                var coverage = 0f;
-                var red = 0f;
-                var green = 0f;
-                var blue = 0f;
-                var objectTileBase = tileBase + ((attributes & 0x01) != 0 ? tileNameSelectOffset : 0);
-                AccumulateObjectSample(
-                    sourceX0, sourceY0, (1f - fractionX) * (1f - fractionY),
-                    objectSize, tile, objectTileBase, palette, horizontalFlip, verticalFlip, videoRam, colorRam,
-                    ref coverage, ref red, ref green, ref blue);
-                if (fractionX > 0f)
-                {
-                    AccumulateObjectSample(
-                        sourceX1, sourceY0, fractionX * (1f - fractionY),
-                        objectSize, tile, objectTileBase, palette, horizontalFlip, verticalFlip, videoRam, colorRam,
-                        ref coverage, ref red, ref green, ref blue);
-                }
-
-                if (fractionY > 0f)
-                {
-                    AccumulateObjectSample(
-                        sourceX0, sourceY1, (1f - fractionX) * fractionY,
-                        objectSize, tile, objectTileBase, palette, horizontalFlip, verticalFlip, videoRam, colorRam,
-                        ref coverage, ref red, ref green, ref blue);
-                    if (fractionX > 0f)
-                    {
-                        AccumulateObjectSample(
-                            sourceX1, sourceY1, fractionX * fractionY,
-                            objectSize, tile, objectTileBase, palette, horizontalFlip, verticalFlip, videoRam, colorRam,
-                            ref coverage, ref red, ref green, ref blue);
-                    }
-                }
-
-                if (coverage <= 0f)
-                {
-                    continue;
-                }
-
-                var pixelIndex = (targetScanline * Width) + screenX;
-                var destination = pixelColors[pixelIndex];
-                var inverseCoverage = 1f - coverage;
-                var colorValue = (ushort)(
-                    Math.Clamp((int)MathF.Round(red + ((destination & 0x1F) * inverseCoverage)), 0, 31)
-                    | (Math.Clamp((int)MathF.Round(green + (((destination >> 5) & 0x1F) * inverseCoverage)), 0, 31) << 5)
-                    | (Math.Clamp((int)MathF.Round(blue + (((destination >> 10) & 0x1F) * inverseCoverage)), 0, 31) << 10));
-                WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, ReadColor(colorValue, brightness, forcedBlank: false));
-                pixelColors[pixelIndex] = colorValue;
-                pixelSources[pixelIndex] = palette >= 4 ? (byte)5 : (byte)6;
-            }
-        }
-    }
-
-    private static void AccumulateObjectSample(
-        int sourceX,
-        int sourceY,
-        float weight,
-        int objectSize,
-        byte tile,
-        int objectTileBase,
-        int palette,
-        bool horizontalFlip,
-        bool verticalFlip,
-        ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam,
-        ref float coverage,
-        ref float red,
-        ref float green,
-        ref float blue)
-    {
-        if (weight <= 0f || (uint)sourceX >= objectSize || (uint)sourceY >= objectSize)
-        {
-            return;
-        }
-
-        if (horizontalFlip)
-        {
-            sourceX = objectSize - 1 - sourceX;
-        }
-
-        if (verticalFlip)
-        {
-            sourceY = objectSize - 1 - sourceY;
-        }
-
-        var tileNumber = (tile + ((sourceY / 8) * 16) + (sourceX / 8)) & 0xFF;
-        var tileAddress = (objectTileBase + (tileNumber * 32)) & 0xFFFF;
-        var colorIndex = ReadTilePixel(videoRam, tileAddress, 4, sourceX & 7, sourceY & 7);
-        if (colorIndex == 0)
-        {
-            return;
-        }
-
-        var color = ReadColorValue(colorRam, 128 + (palette * 16) + colorIndex);
-        coverage += weight;
-        red += (color & 0x1F) * weight;
-        green += ((color >> 5) & 0x1F) * weight;
-        blue += ((color >> 10) & 0x1F) * weight;
     }
 
     private static (int Small, int Large) GetObjectSizes(int sizeMode)
