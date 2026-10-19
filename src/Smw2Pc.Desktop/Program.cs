@@ -14,6 +14,7 @@ internal static class Program
     private const int MaximumCatchUpFrames = 5;
     private const int MaximumSoftwarePresentationRate = DesktopSettings.MaximumRenderFrameRate;
     private const int MaximumVSyncPresentationRate = 90;
+    private const int PresentationIntervalSampleCount = 180;
     private static readonly long SettingsSaveDelayTicks = Stopwatch.Frequency / 2;
     private static readonly (int Width, int Height)[] ResolutionPresets =
     [
@@ -176,6 +177,12 @@ internal static class Program
         var settingsSavePending = false;
         var settingsSaveTimestamp = 0L;
         var smoothedRenderToPresentTicks = 0L;
+        var presentationIntervals = new long[PresentationIntervalSampleCount];
+        var presentationIntervalCount = 0;
+        var nextPresentationIntervalIndex = 0;
+        var lastPresentedTimestamp = 0L;
+        var measuredPresentedFrameRate = 0.0;
+        var longestPresentationIntervalMilliseconds = 0.0;
 
         using (var compiledRomStream = typeof(Program).Assembly.GetManifestResourceStream(CompiledRomResourceName))
         {
@@ -538,12 +545,38 @@ internal static class Program
                         loadedRom?.Header.FrameRateHz,
                         statusMessage,
                         audioError,
-                        verticalSyncEnabled);
+                        verticalSyncEnabled,
+                        displayRefreshRate,
+                        measuredPresentedFrameRate,
+                        longestPresentationIntervalMilliseconds);
                 }
 
                 SDL.RenderPresent(renderer);
 
                 var presentedTimestamp = Stopwatch.GetTimestamp();
+                if (lastPresentedTimestamp != 0)
+                {
+                    presentationIntervals[nextPresentationIntervalIndex] = presentedTimestamp - lastPresentedTimestamp;
+                    nextPresentationIntervalIndex = (nextPresentationIntervalIndex + 1) % presentationIntervals.Length;
+                    presentationIntervalCount = Math.Min(presentationIntervalCount + 1, presentationIntervals.Length);
+
+                    long totalIntervalTicks = 0;
+                    long longestIntervalTicks = 0;
+                    for (var index = 0; index < presentationIntervalCount; index++)
+                    {
+                        var intervalTicks = presentationIntervals[index];
+                        totalIntervalTicks += intervalTicks;
+                        longestIntervalTicks = Math.Max(longestIntervalTicks, intervalTicks);
+                    }
+
+                    measuredPresentedFrameRate = totalIntervalTicks > 0
+                        ? presentationIntervalCount * (double)Stopwatch.Frequency / totalIntervalTicks
+                        : 0;
+                    longestPresentationIntervalMilliseconds =
+                        longestIntervalTicks * 1_000.0 / Stopwatch.Frequency;
+                }
+                lastPresentedTimestamp = presentedTimestamp;
+
                 if (presentedFrameRendererStart != 0)
                 {
                     var rendererToPresentTicks = presentedTimestamp - presentedFrameRendererStart;
@@ -554,12 +587,14 @@ internal static class Program
 
                 var updatedRenderIntervalTicks = Math.Max(1, (long)Math.Round(Stopwatch.Frequency / presentationFrameRate));
                 nextPresentationTimestamp += updatedRenderIntervalTicks;
-                if (nextPresentationTimestamp < presentedTimestamp)
+                if (nextPresentationTimestamp <= presentedTimestamp)
                 {
-                    // If rendering missed its slot, continue as soon as the work finishes.
-                    // Advancing to the next future slot here adds a full extra interval after
-                    // every slow frame and can cut the effective frame rate in half.
-                    nextPresentationTimestamp = presentedTimestamp;
+                    // Skip missed deadlines while keeping the presentation cadence on its
+                    // original phase. Restarting from now can cause catch-up frames to
+                    // bunch together after a slow frame.
+                    var overdueTicks = presentedTimestamp - nextPresentationTimestamp;
+                    var missedIntervals = (overdueTicks / updatedRenderIntervalTicks) + 1;
+                    nextPresentationTimestamp += missedIntervals * updatedRenderIntervalTicks;
                 }
             }
 
@@ -1040,7 +1075,10 @@ internal static class Program
         double? gameFrameRate,
         string statusMessage,
         string audioError,
-        bool verticalSyncEnabled)
+        bool verticalSyncEnabled,
+        double displayRefreshRate,
+        double measuredPresentedFrameRate,
+        double longestPresentationIntervalMilliseconds)
     {
         SDL.SetRenderDrawColor(renderer, 8, 11, 18, 248);
         SDL.RenderFillRect(renderer, in panel);
@@ -1072,6 +1110,17 @@ internal static class Program
                 MakeUiColor(181, 194, 211));
             DrawText(renderer, textRenderer, "Display settings do not change physics.",
                 panel.X + 20, panel.Y + 300, 12, MakeUiColor(181, 194, 211));
+
+            var measuredOutputText = measuredPresentedFrameRate > 0
+                ? $"Output: {measuredPresentedFrameRate:0.0} FPS · longest gap: {longestPresentationIntervalMilliseconds:0.0} ms"
+                : "Output: collecting frame timing...";
+            DrawText(renderer, textRenderer, measuredOutputText,
+                panel.X + 20, panel.Y + 324, 12, MakeUiColor(181, 194, 211));
+            var displayRefreshText = displayRefreshRate > 0
+                ? $"Display refresh: {displayRefreshRate:0.##} Hz"
+                : "Display refresh: unavailable";
+            DrawText(renderer, textRenderer, displayRefreshText,
+                panel.X + 20, panel.Y + 344, 12, MakeUiColor(181, 194, 211));
 
             var systemStatus = !string.IsNullOrWhiteSpace(audioError)
                 ? audioError
