@@ -3,7 +3,9 @@ param(
     [string] $BuildType = "dev",
     [string] $TagName = "",
     [string] $RunNumber = $env:GITHUB_RUN_NUMBER,
-    [string] $RunAttempt = $env:GITHUB_RUN_ATTEMPT
+    [string] $RunAttempt = $env:GITHUB_RUN_ATTEMPT,
+    [ValidateSet("win-x64", "linux-x64")]
+    [string] $RuntimeIdentifier = "win-x64"
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,7 +41,7 @@ $result = [ordered] @{
     tag = $TagName
     ref = $sourceCommit
     channel = $BuildType
-    artifact = "SMW2PC-$version-win-x64"
+    artifact = "SMW2PC-$version-$RuntimeIdentifier"
 }
 if ($env:GITHUB_OUTPUT) {
     foreach ($entry in $result.GetEnumerator()) { "$($entry.Key)=$($entry.Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }

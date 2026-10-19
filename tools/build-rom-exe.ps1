@@ -45,6 +45,7 @@ dotnet publish $projectPath `
     --runtime $RuntimeIdentifier `
     --self-contained true `
     --output $outputPath `
+    "-p:RuntimeIdentifier=$RuntimeIdentifier" `
     "-p:PublishSingleFile=true" `
     "-p:IncludeNativeLibrariesForSelfExtract=true" `
     "-p:IncludeAllContentForSelfExtract=true" `

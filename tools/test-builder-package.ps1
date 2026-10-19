@@ -1,18 +1,65 @@
 param(
     [Parameter(Mandatory = $true)] [string] $Archive,
-    [Parameter(Mandatory = $true)] [string] $Version
+    [Parameter(Mandatory = $true)] [string] $Version,
+    [ValidateSet("win-x64", "linux-x64")]
+    [string] $RuntimeIdentifier = "win-x64"
 )
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$testDirectory = Join-Path $repositoryRoot ("artifacts\package-tests\" + [Guid]::NewGuid().ToString("N"))
+$testDirectory = Join-Path $repositoryRoot ("artifacts/package-tests/" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $testDirectory | Out-Null
-Expand-Archive -LiteralPath $Archive -DestinationPath $testDirectory
-$builder = Join-Path $testDirectory "SMW2PC.exe"
-if ((Get-Item -LiteralPath $builder).VersionInfo.ProductVersion.Split('+')[0] -ne $Version) { throw "Packaged executable version does not match the artifact." }
+if ($Archive.EndsWith(".tar.gz", [StringComparison]::OrdinalIgnoreCase)) {
+    & tar -xzf $Archive -C $testDirectory
+    if ($LASTEXITCODE -ne 0) { throw "Could not extract the Linux builder package." }
+} else {
+    Expand-Archive -LiteralPath $Archive -DestinationPath $testDirectory
+}
+
+$targetIsWindows = $RuntimeIdentifier.StartsWith("win-")
+$builderName = if ($targetIsWindows) { "SMW2PC.exe" } else { "SMW2PC" }
+$gameName = if ($targetIsWindows) { "SMW.exe" } else { "SMW" }
+$builder = Join-Path $testDirectory $builderName
+if (-not (Test-Path -LiteralPath $builder)) { throw "Builder executable is missing from the package." }
+$builderVersion = if ($targetIsWindows) {
+    (Get-Item -LiteralPath $builder).VersionInfo.ProductVersion.Split('+')[0]
+} else {
+    (& $builder --version).Trim()
+}
+$versionCheckSucceeded = $targetIsWindows -or $LASTEXITCODE -eq 0
+if (-not $versionCheckSucceeded -or $builderVersion -ne $Version) { throw "Packaged executable version does not match the artifact." }
 if (Get-ChildItem -LiteralPath $testDirectory -Recurse -File | Where-Object { $_.Extension -in @('.sfc', '.smc') }) { throw "A ROM was included in the distribution." }
 
-# A generated infinite loop exercises compilation and bundling without game assets.
+function Invoke-PackagedProcess([string] $FilePath, [string[]] $Arguments, [int] $TimeoutSeconds = 600) {
+    $start = [Diagnostics.ProcessStartInfo]::new($FilePath)
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.WorkingDirectory = $testDirectory
+    $argumentListProperty = $start.GetType().GetProperty("ArgumentList")
+    if ($argumentListProperty) {
+        $argumentList = $argumentListProperty.GetValue($start)
+        foreach ($argument in $Arguments) { $argumentList.Add($argument) }
+    } else {
+        $start.Arguments = ($Arguments | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join ' '
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    if (-not $process.Start()) { throw "Could not start $FilePath." }
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        $killTreeMethod = $process.GetType().GetMethod("Kill", [type[]] @([bool]))
+        if ($killTreeMethod) { $killTreeMethod.Invoke($process, @($true)) } else { $process.Kill() }
+        throw "Timed out running $FilePath."
+    }
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    if ($process.ExitCode -ne 0) { throw "Command failed ($($process.ExitCode)): $FilePath`n$stdout`n$stderr" }
+    return $stdout
+}
+
+# A generated infinite loop exercises ROM analysis, source generation, compilation and bundling.
 $rom = New-Object byte[] 0x8000
 $rom[0] = 0x80; $rom[1] = 0xFE
 [Text.Encoding]::ASCII.GetBytes("SMW2PC PACKAGE TEST   ").CopyTo($rom, 0x7FC0)
@@ -25,29 +72,27 @@ $romPath = Join-Path $testDirectory "synthetic fixture.sfc"
 $savedPath = $env:PATH
 $savedRoot = $env:DOTNET_ROOT
 try {
-    $env:PATH = Join-Path $env:SystemRoot "System32"
+    $env:PATH = if ($targetIsWindows) { Join-Path $env:SystemRoot "System32" } else { "/usr/bin:/bin" }
     $env:DOTNET_ROOT = Join-Path $testDirectory "no-installed-sdk"
-    $process = Start-Process -FilePath $builder -ArgumentList @('--build', ('"' + $romPath + '"')) `
-        -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $testDirectory "build.stdout.log") `
-        -RedirectStandardError (Join-Path $testDirectory "build.stderr.log")
-    $processHandle = $process.Handle
-    if (-not $process.WaitForExit(600000)) { $process.Kill(); throw "Packaged builder timed out." }
-    $process.WaitForExit()
-    if ($process.ExitCode -ne 0) {
-        Get-Content -LiteralPath (Join-Path $testDirectory "build.stderr.log")
-        throw "Packaged ROM compilation failed."
-    }
-    $game = Join-Path $testDirectory "SMW.exe"
-    if (-not (Test-Path -LiteralPath $game)) { throw "The builder did not create SMW.exe beside itself." }
-    $verified = Start-Process -FilePath $game -ArgumentList "--verify-native" -WindowStyle Hidden -Wait -PassThru
-    if ($verified.ExitCode -ne 0) { throw "The generated SMW.exe failed its native dependency check." }
+    Invoke-PackagedProcess $builder @('--build', $romPath, '--output', $testDirectory) | Out-Null
+    $game = Join-Path $testDirectory $gameName
+    if (-not (Test-Path -LiteralPath $game)) { throw "The builder did not create $gameName beside itself." }
+    Invoke-PackagedProcess $game @('--verify-native') | Out-Null
     $gameHash = (Get-FileHash -LiteralPath $game -Algorithm SHA256).Hash
     $invalidRom = Join-Path $testDirectory "invalid.sfc"
-    [IO.File]::WriteAllBytes($invalidRom, (New-Object byte[] 1024))
-    $rejected = Start-Process -FilePath $builder -ArgumentList @('--build', ('"' + $invalidRom + '"')) -WindowStyle Hidden -Wait -PassThru
-    if ($rejected.ExitCode -eq 0 -or (Get-FileHash -LiteralPath $game -Algorithm SHA256).Hash -ne $gameHash) {
+    [IO.File]::WriteAllBytes($invalidRom, [byte[]]::new(1024))
+    try {
+        Invoke-PackagedProcess $builder @('--build', $invalidRom, '--output', $testDirectory) | Out-Null
+        throw "An invalid ROM was unexpectedly accepted."
+    } catch {
+        if ($_.Exception.Message -eq "An invalid ROM was unexpectedly accepted.") { throw }
+    }
+    if ((Get-FileHash -LiteralPath $game -Algorithm SHA256).Hash -ne $gameHash) {
         throw "An invalid ROM replaced the previous compiled game."
     }
-    Write-Host "Packaged builder created and verified SMW.exe without an installed SDK."
+    Write-Host "Packaged builder created and verified $gameName without an installed SDK."
 }
-finally { $env:PATH = $savedPath; $env:DOTNET_ROOT = $savedRoot }
+finally {
+    $env:PATH = $savedPath
+    $env:DOTNET_ROOT = $savedRoot
+}

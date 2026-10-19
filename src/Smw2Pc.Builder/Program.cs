@@ -14,8 +14,15 @@ internal static class Program
 
     // IncludeAllContentForSelfExtract points AppContext.BaseDirectory into the
     // runtime cache. Outputs belong beside the executable the user opened.
-    private static string BuilderDirectory => Path.GetDirectoryName(Environment.ProcessPath)!
-        ?? throw new InvalidOperationException("Cannot locate the builder executable.");
+    private static string BuilderDirectory
+    {
+        get
+        {
+            var executableDirectory = new DirectoryInfo(Path.GetDirectoryName(Environment.ProcessPath)!
+                ?? throw new InvalidOperationException("Cannot locate the builder executable."));
+            return executableDirectory.FullName;
+        }
+    }
 
     private static int Main(string[] args)
     {
@@ -26,7 +33,7 @@ internal static class Program
             if (args.Length > 0)
             {
                 if (args.Length is not (2 or 4) || args[0] != "--build" || (args.Length == 4 && args[2] != "--output"))
-                    throw new ArgumentException("Usage: SMW2PC.exe [--build <rom> [--output <directory>]]");
+                    throw new ArgumentException("Usage: SMW2PC [--build <rom> [--output <directory>]]");
                 GameBuilder.BuildAsync(args[1], args.Length == 4 ? args[3] : BuilderDirectory, Console.WriteLine)
                     .GetAwaiter().GetResult();
                 return 0;
@@ -52,7 +59,7 @@ internal static class Program
         Task<string>? build = null;
         var running = true;
         var dialogOpen = false;
-        var status = "Creates SMW.exe in this folder";
+        var status = $"Creates {GameBuilder.ArtifactName} in this folder";
         var failed = false;
         try
         {
@@ -82,18 +89,18 @@ internal static class Program
                 {
                     dialogOpen = false;
                     if (rom.Length == 0 || build is not null) continue;
-                    status = "Building SMW.exe...";
+                    status = $"Building {GameBuilder.ArtifactName}...";
                     failed = false;
                     build = Task.Run(() => GameBuilder.BuildAsync(rom, BuilderDirectory, cancellationToken: cancellation.Token));
                 }
                 if (build?.IsCompleted == true)
                 {
-                    try { build.GetAwaiter().GetResult(); status = "SMW.exe created"; }
+                    try { build.GetAwaiter().GetResult(); status = $"{GameBuilder.ArtifactName} created"; }
                     catch (Exception exception)
                     {
                         failed = true;
                         status = exception is ArgumentException ? "Select a .sfc or .smc ROM"
-                            : "Build failed — see %LOCALAPPDATA%\\SMW2PC\\build.log";
+                            : "Build failed — see the SMW2PC build log";
                     }
                     build = null;
                 }
