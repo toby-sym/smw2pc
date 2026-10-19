@@ -34,6 +34,12 @@ internal static class Program
         Controls,
     }
 
+    private enum BindingMode
+    {
+        Keyboard,
+        Gamepad,
+    }
+
     private enum GameAction
     {
         Left,
@@ -80,6 +86,8 @@ internal static class Program
         new(GameAction.R, "R", "Shoulder"),
     ];
 
+    private const short GamepadStickDeadZone = 16_000;
+
     private static int Main(string[] args)
     {
         if (args.Contains("--verify-native")) return NativeDependencyProof.Run();
@@ -96,6 +104,10 @@ internal static class Program
             Console.Error.WriteLine($"SDL could not initialize: {SDL.GetError()}");
             return 1;
         }
+
+        var gamepadSubsystemInitialized = SDL.InitSubSystem(SDL.InitFlags.Gamepad);
+        if (gamepadSubsystemInitialized)
+            SDL.SetGamepadEventsEnabled(true);
 
         if (!SDL.CreateWindowAndRenderer(
                 "SMW2PC",
@@ -130,6 +142,12 @@ internal static class Program
         var textRenderer = UiTextRenderer.TryCreate(
             renderer,
             BundledAssets.GetFontPath());
+
+        uint activeGamepadId = 0;
+        var gamepadName = string.Empty;
+        var gamepad = gamepadSubsystemInitialized
+            ? OpenFirstGamepad(out activeGamepadId, out gamepadName)
+            : IntPtr.Zero;
 
         SDL.SetTextureScaleMode(gameTexture, SDL.ScaleMode.Nearest);
         var displayId = SDL.GetDisplayForWindow(window);
@@ -178,6 +196,8 @@ internal static class Program
         var statusMessage = audioError;
         SnesRom? loadedRom = null;
         NativeCpuRunner? cpuRunner = null;
+        SnesControllerButtons keyboardButtons = SnesControllerButtons.None;
+        SnesControllerButtons gamepadButtons = SnesControllerButtons.None;
         SnesControllerButtons controllerButtons = SnesControllerButtons.None;
         var frameBuffer = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
         var previousTimestamp = Stopwatch.GetTimestamp();
@@ -185,6 +205,7 @@ internal static class Program
         var nextPresentationTimestamp = previousTimestamp;
         var settingsOpen = false;
         var settingsTab = SettingsTab.Display;
+        var bindingMode = BindingMode.Keyboard;
         GameAction? rebindingAction = null;
         var settingsSavePending = false;
         var settingsSaveTimestamp = 0L;
@@ -336,8 +357,10 @@ internal static class Program
                         mouseY,
                         settingsPanel,
                         ref settingsTab,
+                        ref bindingMode,
                         settings,
                         window,
+                        gamepad != IntPtr.Zero,
                         ref rebindingAction,
                         ref settingsOpen,
                         ref statusMessage))
@@ -355,14 +378,14 @@ internal static class Program
                 {
                     var isDown = eventType == SDL.EventType.KeyDown;
                     var key = @event.Key.Key;
-                    if (isDown && rebindingAction.HasValue)
+                    if (isDown && rebindingAction.HasValue && key == SDL.Keycode.Escape)
                     {
-                        if (key == SDL.Keycode.Escape)
-                        {
-                            rebindingAction = null;
-                            statusMessage = "Key binding cancelled.";
-                        }
-                        else if (key is SDL.Keycode.F1 or SDL.Keycode.F2)
+                        rebindingAction = null;
+                        statusMessage = "Binding cancelled.";
+                    }
+                    else if (isDown && rebindingAction.HasValue && bindingMode == BindingMode.Keyboard)
+                    {
+                        if (key is SDL.Keycode.F1 or SDL.Keycode.F2)
                         {
                             statusMessage = "F1 and F2 are reserved for app shortcuts.";
                         }
@@ -376,7 +399,8 @@ internal static class Program
                             var action = rebindingAction.Value;
                             SetKeyForAction(settings, action, key);
                             rebindingAction = null;
-                            controllerButtons = SnesControllerButtons.None;
+                            keyboardButtons = SnesControllerButtons.None;
+                            controllerButtons = keyboardButtons | gamepadButtons;
                             cpuRunner?.MemoryBus.Hardware.SetControllerButtons(0, controllerButtons);
                             statusMessage = $"{GetActionName(action)} is now {GetKeyName(key)}.";
                             settingsSavePending = true;
@@ -395,14 +419,64 @@ internal static class Program
                     else if (isDown && key == SDL.Keycode.Escape)
                     {
                         settingsOpen = false;
+                        rebindingAction = null;
                     }
                     else
                     {
-                        controllerButtons = SetButtonForKey(controllerButtons, key, isDown, settings);
+                        keyboardButtons = SetButtonForKey(keyboardButtons, key, isDown, settings);
+                        controllerButtons = keyboardButtons | gamepadButtons;
                         cpuRunner?.MemoryBus.Hardware.SetControllerButtons(0, controllerButtons);
                     }
                 }
+                else if (eventType == SDL.EventType.GamepadAdded && gamepad == IntPtr.Zero)
+                {
+                    gamepad = OpenGamepad(@event.GDevice.Which, out gamepadName);
+                    if (gamepad != IntPtr.Zero)
+                    {
+                        activeGamepadId = @event.GDevice.Which;
+                        statusMessage = $"Controller connected: {gamepadName}.";
+                    }
+                }
+                else if (eventType == SDL.EventType.GamepadRemoved && @event.GDevice.Which == activeGamepadId)
+                {
+                    if (gamepad != IntPtr.Zero)
+                        SDL.CloseGamepad(gamepad);
+                    gamepad = gamepadSubsystemInitialized
+                        ? OpenFirstGamepad(out activeGamepadId, out gamepadName)
+                        : IntPtr.Zero;
+                    gamepadButtons = SnesControllerButtons.None;
+                    controllerButtons = keyboardButtons;
+                    cpuRunner?.MemoryBus.Hardware.SetControllerButtons(0, controllerButtons);
+                    statusMessage = gamepad != IntPtr.Zero
+                        ? $"Controller connected: {gamepadName}."
+                        : "Controller disconnected.";
+                }
+                else if (eventType == SDL.EventType.GamepadButtonDown
+                    && @event.GButton.Which == activeGamepadId
+                    && rebindingAction.HasValue
+                    && bindingMode == BindingMode.Gamepad)
+                {
+                    var button = (SDL.GamepadButton)@event.GButton.Button;
+                    if (TryGetActionForGamepadButton(settings, button, out var existingAction)
+                        && existingAction != rebindingAction.Value)
+                    {
+                        statusMessage = $"{GetGamepadButtonName(gamepad, button)} is already assigned to {GetActionName(existingAction)}.";
+                    }
+                    else
+                    {
+                        var action = rebindingAction.Value;
+                        SetGamepadButtonForAction(settings, action, button);
+                        rebindingAction = null;
+                        statusMessage = $"{GetActionName(action)} is now {GetGamepadButtonName(gamepad, button)}.";
+                        settingsSavePending = true;
+                        settingsSaveTimestamp = Stopwatch.GetTimestamp();
+                    }
+                }
             }
+
+            gamepadButtons = GetGamepadControllerButtons(gamepad, settings);
+            controllerButtons = keyboardButtons | gamepadButtons;
+            cpuRunner?.MemoryBus.Hardware.SetControllerButtons(0, controllerButtons);
 
             while (PendingFileDialogResults.TryDequeue(out var dialogResult))
             {
@@ -593,7 +667,10 @@ internal static class Program
                         audioError,
                         verticalSyncEnabled,
                         displayRefreshRate,
-                        timingDisplay);
+                        timingDisplay,
+                        bindingMode,
+                        gamepad,
+                        gamepadName);
                 }
 
                 drawTicksSinceLastPresentation += Stopwatch.GetTimestamp() - drawStartTimestamp;
@@ -731,6 +808,10 @@ internal static class Program
         }
 
         textRenderer?.Dispose();
+        if (gamepad != IntPtr.Zero)
+            SDL.CloseGamepad(gamepad);
+        if (gamepadSubsystemInitialized)
+            SDL.QuitSubSystem(SDL.InitFlags.Gamepad);
         SDL.DestroyTexture(gameTexture);
         SDL.DestroyRenderer(renderer);
         SDL.DestroyWindow(window);
@@ -1091,8 +1172,10 @@ internal static class Program
         float mouseY,
         SDL.FRect panel,
         ref SettingsTab settingsTab,
+        ref BindingMode bindingMode,
         DesktopSettings settings,
         IntPtr window,
+        bool gamepadConnected,
         ref GameAction? rebindingAction,
         ref bool settingsOpen,
         ref string statusMessage)
@@ -1126,12 +1209,34 @@ internal static class Program
 
         if (settingsTab == SettingsTab.Controls)
         {
+            if (IsInside(mouseX, mouseY, GetKeyboardBindingTab(panel)))
+            {
+                bindingMode = BindingMode.Keyboard;
+                rebindingAction = null;
+                statusMessage = "Keyboard bindings selected.";
+                return true;
+            }
+
+            if (IsInside(mouseX, mouseY, GetGamepadBindingTab(panel)))
+            {
+                bindingMode = BindingMode.Gamepad;
+                rebindingAction = null;
+                statusMessage = gamepadConnected
+                    ? "Gamepad bindings selected."
+                    : "Connect an XInput controller to bind its buttons.";
+                return true;
+            }
+
             for (var index = 0; index < BindingRows.Length; index++)
             {
                 if (IsInside(mouseX, mouseY, GetBindingRow(panel, index)))
                 {
                     rebindingAction = BindingRows[index].Action;
-                    statusMessage = $"Press a key for {GetActionName(rebindingAction.Value)}. Escape cancels.";
+                    statusMessage = bindingMode == BindingMode.Keyboard
+                        ? $"Press a key for {GetActionName(rebindingAction.Value)}. Escape cancels."
+                        : gamepadConnected
+                            ? $"Press a controller button for {GetActionName(rebindingAction.Value)}. Escape cancels."
+                            : "Connect an XInput controller, then press a button. Escape cancels.";
                     return true;
                 }
             }
@@ -1202,7 +1307,10 @@ internal static class Program
         string audioError,
         bool verticalSyncEnabled,
         double displayRefreshRate,
-        FrameTimingDisplay timingDisplay)
+        FrameTimingDisplay timingDisplay,
+        BindingMode bindingMode,
+        IntPtr gamepad,
+        string gamepadName)
     {
         SDL.SetRenderDrawColor(renderer, 8, 11, 18, 248);
         SDL.RenderFillRect(renderer, in panel);
@@ -1268,19 +1376,25 @@ internal static class Program
         }
         else
         {
-            var controlsMessage = rebindingAction.HasValue
-                || statusMessage.Contains("already assigned", StringComparison.Ordinal)
-                || statusMessage.Contains("reserved", StringComparison.Ordinal)
-                    ? statusMessage
-                    : "Choose an action, then press a key.";
+            DrawSettingsTab(renderer, textRenderer, GetKeyboardBindingTab(panel), "KEYBOARD",
+                bindingMode == BindingMode.Keyboard);
+            DrawSettingsTab(renderer, textRenderer, GetGamepadBindingTab(panel), "GAMEPAD",
+                bindingMode == BindingMode.Gamepad);
+            var controllerText = gamepad == IntPtr.Zero
+                ? "Controller: Not connected. Connect an XInput controller."
+                : $"Controller: {gamepadName} · D-pad and left stick move.";
+            var controlsMessage = rebindingAction.HasValue ? statusMessage : controllerText;
             DrawText(renderer, textRenderer,
                 Truncate(controlsMessage, Math.Max(16, (int)((panel.W - 40) / 8))),
-                panel.X + 20, panel.Y + 91, 12, MakeUiColor(181, 194, 211));
+                panel.X + 20, panel.Y + 114, 11, MakeUiColor(181, 194, 211));
             for (var index = 0; index < BindingRows.Length; index++)
             {
                 var row = BindingRows[index];
                 DrawBindingRow(renderer, textRenderer, GetBindingRow(panel, index), row,
-                    GetBoundKey(settings, row.Action), rebindingAction == row.Action);
+                    bindingMode == BindingMode.Keyboard
+                        ? GetKeyName(GetBoundKey(settings, row.Action))
+                        : GetGamepadButtonName(gamepad, GetBoundGamepadButton(settings, row.Action)),
+                    rebindingAction == row.Action);
             }
 
             DrawText(renderer, textRenderer, "F1 opens ROMs  |  F2 toggles settings  |  Esc cancels",
@@ -1329,7 +1443,7 @@ internal static class Program
         UiTextRenderer? textRenderer,
         SDL.FRect row,
         BindingRow binding,
-        SDL.Keycode key,
+        string bindingName,
         bool isListening)
     {
         SDL.SetRenderDrawColor(renderer, isListening ? (byte)58 : (byte)28,
@@ -1345,7 +1459,7 @@ internal static class Program
             W = 98,
             H = row.H - 4,
         };
-        DrawSettingsButton(renderer, textRenderer, keyButton, isListening ? "PRESS KEY" : GetKeyName(key), 11);
+        DrawSettingsButton(renderer, textRenderer, keyButton, isListening ? "PRESS INPUT" : bindingName, 11);
     }
 
     private static void DrawSettingsCog(IntPtr renderer, SDL.FRect button, bool selected)
@@ -1411,9 +1525,25 @@ internal static class Program
     private static SDL.FRect GetBindingRow(SDL.FRect panel, int index) => new()
     {
         X = panel.X + 12,
-        Y = panel.Y + 104 + (index * 24),
+        Y = panel.Y + 136 + (index * 23),
         W = panel.W - 24,
-        H = 23,
+        H = 22,
+    };
+
+    private static SDL.FRect GetKeyboardBindingTab(SDL.FRect panel) => new()
+    {
+        X = panel.X + 12,
+        Y = panel.Y + 80,
+        W = (panel.W - 28) / 2,
+        H = 28,
+    };
+
+    private static SDL.FRect GetGamepadBindingTab(SDL.FRect panel) => new()
+    {
+        X = panel.X + 16 + ((panel.W - 28) / 2),
+        Y = panel.Y + 80,
+        W = (panel.W - 28) / 2,
+        H = 28,
     };
 
     private static string GetAspectRatioName(GameAspectRatio aspectRatio)
@@ -1558,27 +1688,186 @@ internal static class Program
                 continue;
             }
 
-            var button = row.Action switch
-            {
-                GameAction.Left => SnesControllerButtons.Left,
-                GameAction.Right => SnesControllerButtons.Right,
-                GameAction.Up => SnesControllerButtons.Up,
-                GameAction.Down => SnesControllerButtons.Down,
-                GameAction.B => SnesControllerButtons.B,
-                GameAction.Y => SnesControllerButtons.Y,
-                GameAction.A => SnesControllerButtons.A,
-                GameAction.X => SnesControllerButtons.X,
-                GameAction.Start => SnesControllerButtons.Start,
-                GameAction.Select => SnesControllerButtons.Select,
-                GameAction.L => SnesControllerButtons.L,
-                GameAction.R => SnesControllerButtons.R,
-                _ => SnesControllerButtons.None,
-            };
+            var button = GetSnesControllerButton(row.Action);
 
             return pressed ? currentButtons | button : currentButtons & ~button;
         }
 
         return currentButtons;
+    }
+
+    private static IntPtr OpenFirstGamepad(out uint instanceId, out string gamepadName)
+    {
+        instanceId = 0;
+        gamepadName = string.Empty;
+        var gamepadIds = SDL.GetGamepads(out var gamepadCount);
+        if (gamepadIds is null || gamepadIds.Length == 0)
+            return IntPtr.Zero;
+
+        for (var index = 0; index < gamepadCount && index < gamepadIds.Length; index++)
+        {
+            var candidateId = gamepadIds[index];
+            if (!SDL.IsGamepad(candidateId))
+                continue;
+
+            var gamepad = OpenGamepad(candidateId, out gamepadName);
+            if (gamepad != IntPtr.Zero)
+            {
+                instanceId = candidateId;
+                return gamepad;
+            }
+        }
+
+        gamepadName = string.Empty;
+        return IntPtr.Zero;
+    }
+
+    private static IntPtr OpenGamepad(uint instanceId, out string gamepadName)
+    {
+        gamepadName = string.Empty;
+        if (!SDL.IsGamepad(instanceId))
+            return IntPtr.Zero;
+
+        var gamepad = SDL.OpenGamepad(instanceId);
+        if (gamepad == IntPtr.Zero)
+            return IntPtr.Zero;
+        if (!SDL.GamepadConnected(gamepad))
+        {
+            SDL.CloseGamepad(gamepad);
+            return IntPtr.Zero;
+        }
+
+        gamepadName = SDL.GetGamepadName(gamepad) ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(gamepadName))
+            gamepadName = "Controller";
+        return gamepad;
+    }
+
+    private static SnesControllerButtons GetGamepadControllerButtons(IntPtr gamepad, DesktopSettings settings)
+    {
+        if (gamepad == IntPtr.Zero || !SDL.GamepadConnected(gamepad))
+            return SnesControllerButtons.None;
+
+        var buttons = SnesControllerButtons.None;
+        foreach (var row in BindingRows)
+        {
+            if (SDL.GetGamepadButton(gamepad, GetBoundGamepadButton(settings, row.Action)))
+                buttons |= GetSnesControllerButton(row.Action);
+        }
+
+        var leftX = SDL.GetGamepadAxis(gamepad, SDL.GamepadAxis.LeftX);
+        var leftY = SDL.GetGamepadAxis(gamepad, SDL.GamepadAxis.LeftY);
+        if (leftX < -GamepadStickDeadZone) buttons |= SnesControllerButtons.Left;
+        if (leftX > GamepadStickDeadZone) buttons |= SnesControllerButtons.Right;
+        if (leftY < -GamepadStickDeadZone) buttons |= SnesControllerButtons.Up;
+        if (leftY > GamepadStickDeadZone) buttons |= SnesControllerButtons.Down;
+        return buttons;
+    }
+
+    private static SnesControllerButtons GetSnesControllerButton(GameAction action)
+    {
+        return action switch
+        {
+            GameAction.Left => SnesControllerButtons.Left,
+            GameAction.Right => SnesControllerButtons.Right,
+            GameAction.Up => SnesControllerButtons.Up,
+            GameAction.Down => SnesControllerButtons.Down,
+            GameAction.B => SnesControllerButtons.B,
+            GameAction.Y => SnesControllerButtons.Y,
+            GameAction.A => SnesControllerButtons.A,
+            GameAction.X => SnesControllerButtons.X,
+            GameAction.Start => SnesControllerButtons.Start,
+            GameAction.Select => SnesControllerButtons.Select,
+            GameAction.L => SnesControllerButtons.L,
+            GameAction.R => SnesControllerButtons.R,
+            _ => SnesControllerButtons.None,
+        };
+    }
+
+    private static SDL.GamepadButton GetBoundGamepadButton(DesktopSettings settings, GameAction action)
+    {
+        return action switch
+        {
+            GameAction.Left => settings.MoveLeftGamepadButton,
+            GameAction.Right => settings.MoveRightGamepadButton,
+            GameAction.Up => settings.MoveUpGamepadButton,
+            GameAction.Down => settings.MoveDownGamepadButton,
+            GameAction.B => settings.ButtonBGamepadButton,
+            GameAction.Y => settings.ButtonYGamepadButton,
+            GameAction.A => settings.ButtonAGamepadButton,
+            GameAction.X => settings.ButtonXGamepadButton,
+            GameAction.Start => settings.StartGamepadButton,
+            GameAction.Select => settings.SelectGamepadButton,
+            GameAction.L => settings.ButtonLGamepadButton,
+            GameAction.R => settings.ButtonRGamepadButton,
+            _ => SDL.GamepadButton.Invalid,
+        };
+    }
+
+    private static void SetGamepadButtonForAction(DesktopSettings settings, GameAction action, SDL.GamepadButton button)
+    {
+        switch (action)
+        {
+            case GameAction.Left: settings.MoveLeftGamepadButton = button; break;
+            case GameAction.Right: settings.MoveRightGamepadButton = button; break;
+            case GameAction.Up: settings.MoveUpGamepadButton = button; break;
+            case GameAction.Down: settings.MoveDownGamepadButton = button; break;
+            case GameAction.B: settings.ButtonBGamepadButton = button; break;
+            case GameAction.Y: settings.ButtonYGamepadButton = button; break;
+            case GameAction.A: settings.ButtonAGamepadButton = button; break;
+            case GameAction.X: settings.ButtonXGamepadButton = button; break;
+            case GameAction.Start: settings.StartGamepadButton = button; break;
+            case GameAction.Select: settings.SelectGamepadButton = button; break;
+            case GameAction.L: settings.ButtonLGamepadButton = button; break;
+            case GameAction.R: settings.ButtonRGamepadButton = button; break;
+        }
+    }
+
+    private static bool TryGetActionForGamepadButton(
+        DesktopSettings settings,
+        SDL.GamepadButton button,
+        out GameAction action)
+    {
+        foreach (var row in BindingRows)
+        {
+            if (GetBoundGamepadButton(settings, row.Action) == button)
+            {
+                action = row.Action;
+                return true;
+            }
+        }
+
+        action = default;
+        return false;
+    }
+
+    private static string GetGamepadButtonName(IntPtr gamepad, SDL.GamepadButton button)
+    {
+        if (gamepad != IntPtr.Zero)
+        {
+            var label = SDL.GetGamepadButtonLabel(gamepad, button).ToString();
+            if (!string.IsNullOrWhiteSpace(label)
+                && !label.Equals("Unknown", StringComparison.OrdinalIgnoreCase)
+                && !label.Equals("Invalid", StringComparison.OrdinalIgnoreCase))
+                return label.ToUpperInvariant();
+        }
+
+        return button switch
+        {
+            SDL.GamepadButton.South => "A",
+            SDL.GamepadButton.East => "B",
+            SDL.GamepadButton.West => "X",
+            SDL.GamepadButton.North => "Y",
+            SDL.GamepadButton.Back => "BACK",
+            SDL.GamepadButton.Start => "START",
+            SDL.GamepadButton.LeftShoulder => "LB",
+            SDL.GamepadButton.RightShoulder => "RB",
+            SDL.GamepadButton.DPadLeft => "D-PAD LEFT",
+            SDL.GamepadButton.DPadRight => "D-PAD RIGHT",
+            SDL.GamepadButton.DPadUp => "D-PAD UP",
+            SDL.GamepadButton.DPadDown => "D-PAD DOWN",
+            _ => button.ToString().ToUpperInvariant(),
+        };
     }
 
     private static bool IsInside(float x, float y, SDL.FRect rectangle)

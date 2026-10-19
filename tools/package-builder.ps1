@@ -61,6 +61,8 @@ foreach ($project in @(@{ Name = "Smw2Pc.Core"; Folder = "core" }, @{ Name = "Sm
     }
 }
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "THIRD-PARTY-NOTICES.md") -Destination $templatePath
+$iconPath = Join-Path $repositoryRoot "assets\SMW2PC.ico"
+if (Test-Path -LiteralPath $iconPath) { Copy-Item -LiteralPath $iconPath -Destination (Join-Path $templatePath "SMW2PC.ico") }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $payloadZip = Join-Path $workPath "payload.zip"
 [IO.Compression.ZipFile]::CreateFromDirectory($payloadPath, $payloadZip, [IO.Compression.CompressionLevel]::Optimal, $false)

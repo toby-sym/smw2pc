@@ -55,6 +55,30 @@ internal sealed class DesktopSettings
 
     public SDL.Keycode ButtonRKey { get; set; } = SDL.Keycode.W;
 
+    public SDL.GamepadButton MoveLeftGamepadButton { get; set; } = SDL.GamepadButton.DPadLeft;
+
+    public SDL.GamepadButton MoveRightGamepadButton { get; set; } = SDL.GamepadButton.DPadRight;
+
+    public SDL.GamepadButton MoveUpGamepadButton { get; set; } = SDL.GamepadButton.DPadUp;
+
+    public SDL.GamepadButton MoveDownGamepadButton { get; set; } = SDL.GamepadButton.DPadDown;
+
+    public SDL.GamepadButton ButtonYGamepadButton { get; set; } = SDL.GamepadButton.West;
+
+    public SDL.GamepadButton ButtonXGamepadButton { get; set; } = SDL.GamepadButton.North;
+
+    public SDL.GamepadButton ButtonAGamepadButton { get; set; } = SDL.GamepadButton.East;
+
+    public SDL.GamepadButton ButtonBGamepadButton { get; set; } = SDL.GamepadButton.South;
+
+    public SDL.GamepadButton StartGamepadButton { get; set; } = SDL.GamepadButton.Start;
+
+    public SDL.GamepadButton SelectGamepadButton { get; set; } = SDL.GamepadButton.Back;
+
+    public SDL.GamepadButton ButtonLGamepadButton { get; set; } = SDL.GamepadButton.LeftShoulder;
+
+    public SDL.GamepadButton ButtonRGamepadButton { get; set; } = SDL.GamepadButton.RightShoulder;
+
     public static DesktopSettings Load()
     {
         try
@@ -87,6 +111,19 @@ internal sealed class DesktopSettings
                     settings.SelectKey = GetValidKey(settings.SelectKey, SDL.Keycode.RShift);
                     settings.ButtonLKey = GetValidKey(settings.ButtonLKey, SDL.Keycode.Q);
                     settings.ButtonRKey = GetValidKey(settings.ButtonRKey, SDL.Keycode.W);
+
+                    settings.MoveLeftGamepadButton = GetValidGamepadButton(settings.MoveLeftGamepadButton, SDL.GamepadButton.DPadLeft);
+                    settings.MoveRightGamepadButton = GetValidGamepadButton(settings.MoveRightGamepadButton, SDL.GamepadButton.DPadRight);
+                    settings.MoveUpGamepadButton = GetValidGamepadButton(settings.MoveUpGamepadButton, SDL.GamepadButton.DPadUp);
+                    settings.MoveDownGamepadButton = GetValidGamepadButton(settings.MoveDownGamepadButton, SDL.GamepadButton.DPadDown);
+                    settings.ButtonYGamepadButton = GetValidGamepadButton(settings.ButtonYGamepadButton, SDL.GamepadButton.West);
+                    settings.ButtonXGamepadButton = GetValidGamepadButton(settings.ButtonXGamepadButton, SDL.GamepadButton.North);
+                    settings.ButtonAGamepadButton = GetValidGamepadButton(settings.ButtonAGamepadButton, SDL.GamepadButton.East);
+                    settings.ButtonBGamepadButton = GetValidGamepadButton(settings.ButtonBGamepadButton, SDL.GamepadButton.South);
+                    settings.StartGamepadButton = GetValidGamepadButton(settings.StartGamepadButton, SDL.GamepadButton.Start);
+                    settings.SelectGamepadButton = GetValidGamepadButton(settings.SelectGamepadButton, SDL.GamepadButton.Back);
+                    settings.ButtonLGamepadButton = GetValidGamepadButton(settings.ButtonLGamepadButton, SDL.GamepadButton.LeftShoulder);
+                    settings.ButtonRGamepadButton = GetValidGamepadButton(settings.ButtonRGamepadButton, SDL.GamepadButton.RightShoulder);
 
                     return settings;
                 }
@@ -126,5 +163,10 @@ internal sealed class DesktopSettings
     private static SDL.Keycode GetValidKey(SDL.Keycode key, SDL.Keycode fallback)
     {
         return Enum.IsDefined(key) && key != SDL.Keycode.Unknown ? key : fallback;
+    }
+
+    private static SDL.GamepadButton GetValidGamepadButton(SDL.GamepadButton button, SDL.GamepadButton fallback)
+    {
+        return Enum.IsDefined(button) && button != SDL.GamepadButton.Invalid ? button : fallback;
     }
 }
