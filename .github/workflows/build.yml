@@ -103,16 +103,20 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
+      - name: Install a virtual X server
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes xvfb
       - name: Package the ROM builder
         shell: pwsh
         env:
           BUILD_VERSION: ${{ needs.prepare.outputs.version }}
-        run: ./tools/package-builder.ps1 -Version $env:BUILD_VERSION -RuntimeIdentifier linux-x64
+        run: xvfb-run -a pwsh -File ./tools/package-builder.ps1 -Version $env:BUILD_VERSION -RuntimeIdentifier linux-x64
       - name: Verify packaged compilation without a ROM or SDK installation
         shell: pwsh
         env:
           BUILD_VERSION: ${{ needs.prepare.outputs.version }}
-        run: ./tools/test-builder-package.ps1 -Archive "artifacts/distribution/SMW2PC-$env:BUILD_VERSION-linux-x64.tar.gz" -Version $env:BUILD_VERSION -RuntimeIdentifier linux-x64
+        run: xvfb-run -a pwsh -File ./tools/test-builder-package.ps1 -Archive "artifacts/distribution/SMW2PC-$env:BUILD_VERSION-linux-x64.tar.gz" -Version $env:BUILD_VERSION -RuntimeIdentifier linux-x64
       - name: Upload versioned Linux build
         uses: actions/upload-artifact@v7
         with:

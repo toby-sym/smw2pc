@@ -4,7 +4,7 @@ internal static class NativeDependencyProof
 {
     public static int Run()
     {
-        Environment.SetEnvironmentVariable("SDL_VIDEO_DRIVER", OperatingSystem.IsLinux() ? "offscreen" : "dummy");
+        Environment.SetEnvironmentVariable("SDL_VIDEO_DRIVER", OperatingSystem.IsLinux() ? "x11" : "dummy");
         Environment.SetEnvironmentVariable("SDL_AUDIO_DRIVER", "dummy");
         Environment.SetEnvironmentVariable("SDL_RENDER_DRIVER", "software");
         IntPtr window = IntPtr.Zero;
