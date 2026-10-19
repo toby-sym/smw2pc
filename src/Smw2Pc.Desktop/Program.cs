@@ -52,6 +52,8 @@ internal static class Program
 
     private readonly record struct BindingRow(GameAction Action, string Label, string Hint);
 
+    private readonly record struct FrameTimingDisplay(string Output, string Work, string Wait, string Peak);
+
     private struct PresentationTimingSample
     {
         public long IntervalTicks;
@@ -128,8 +130,6 @@ internal static class Program
         var textRenderer = UiTextRenderer.TryCreate(
             renderer,
             BundledAssets.GetFontPath());
-        var performanceLog = PresentationLogWriter.TryCreate(out var performanceLogCreationError);
-        performanceLog?.TryWrite("frame,elapsed_ms,interval_ms,presentation_cap_fps,display_refresh_hz,game_hz,vsync_enabled,buttons,cpu_bank,cpu_pc,emulation_ms,game_render_ms,draw_ms,present_ms,pacer_wait_ms,other_ms");
 
         SDL.SetTextureScaleMode(gameTexture, SDL.ScaleMode.Nearest);
         var displayId = SDL.GetDisplayForWindow(window);
@@ -204,13 +204,13 @@ internal static class Program
         var peakEmulationMilliseconds = 0.0;
         var peakGameRenderMilliseconds = 0.0;
         var peakPresentMilliseconds = 0.0;
+        var nextTimingDisplayUpdate = 0L;
+        var timingDisplay = new FrameTimingDisplay("Output: collecting frame timing...", "", "", "");
         var emulationTicksSinceLastPresentation = 0L;
         var gameRenderTicksSinceLastPresentation = 0L;
         var drawTicksSinceLastPresentation = 0L;
         var presentTicksSinceLastPresentation = 0L;
         var pacerWaitTicksSinceLastPresentation = 0L;
-        var processStartTimestamp = Stopwatch.GetTimestamp();
-        long presentationFrameNumber = 0;
 
         using (var compiledRomStream = typeof(Program).Assembly.GetManifestResourceStream(CompiledRomResourceName))
         {
@@ -467,8 +467,10 @@ internal static class Program
                 nextPresentationTimestamp = presentationTimestamp;
             }
 
-            var renderIntervalTicks = Math.Max(1, (long)Math.Round(Stopwatch.Frequency / presentationFrameRate));
-            var renderRequested = presentationTimestamp >= nextPresentationTimestamp;
+            // Software pacing prepares the next frame immediately, then waits at
+            // presentation. Starting the rasterizer at the deadline adds its varying
+            // cost to every frame interval and needlessly loses slots on small overruns.
+            var renderRequested = !verticalSyncEnabled || presentationTimestamp >= nextPresentationTimestamp;
             var presentedFrameRendererStart = 0L;
 
             if (cpuRunner is not null)
@@ -506,8 +508,11 @@ internal static class Program
                     {
                         var renderTimestamp = Stopwatch.GetTimestamp();
                         var timeSinceLoopStart = (double)(renderTimestamp - currentTimestamp) / Stopwatch.Frequency;
+                        var predictedRenderToPresentTicks = verticalSyncEnabled
+                            ? smoothedRenderToPresentTicks
+                            : Math.Max(smoothedRenderToPresentTicks, nextPresentationTimestamp - renderTimestamp);
                         var interpolationProgress = (float)Math.Clamp(
-                            (frameAccumulator + timeSinceLoopStart + (smoothedRenderToPresentTicks / (double)Stopwatch.Frequency)) / frameDuration,
+                            (frameAccumulator + timeSinceLoopStart + (predictedRenderToPresentTicks / (double)Stopwatch.Frequency)) / frameDuration,
                             0.0,
                             1.0);
                         presentedFrameRendererStart = Stopwatch.GetTimestamp();
@@ -588,23 +593,12 @@ internal static class Program
                         audioError,
                         verticalSyncEnabled,
                         displayRefreshRate,
-                        measuredPresentedFrameRate,
-                        longestPresentationIntervalMilliseconds,
-                        meanEmulationMilliseconds,
-                        meanGameRenderMilliseconds,
-                        meanDrawMilliseconds,
-                        meanPresentMilliseconds,
-                        meanPacerWaitMilliseconds,
-                        meanOtherMilliseconds,
-                        peakEmulationMilliseconds,
-                        peakGameRenderMilliseconds,
-                        peakPresentMilliseconds,
-                        performanceLog?.FilePath,
-                        performanceLogCreationError ?? performanceLog?.ErrorMessage,
-                        performanceLog?.DroppedRowCount ?? 0);
+                        timingDisplay);
                 }
 
                 drawTicksSinceLastPresentation += Stopwatch.GetTimestamp() - drawStartTimestamp;
+                if (!verticalSyncEnabled)
+                    pacerWaitTicksSinceLastPresentation += WaitUntil(nextPresentationTimestamp);
                 var presentStartTimestamp = Stopwatch.GetTimestamp();
                 SDL.RenderPresent(renderer);
 
@@ -624,18 +618,6 @@ internal static class Program
                     presentationSamples[nextPresentationIntervalIndex] = sample;
                     nextPresentationIntervalIndex = (nextPresentationIntervalIndex + 1) % presentationSamples.Length;
                     presentationIntervalCount = Math.Min(presentationIntervalCount + 1, presentationSamples.Length);
-
-                    var otherTicks = Math.Max(0,
-                        sample.IntervalTicks
-                            - sample.EmulationTicks
-                            - sample.GameRenderTicks
-                            - sample.DrawTicks
-                            - sample.PresentTicks
-                            - sample.WaitTicks);
-                    var cpuState = cpuRunner?.State;
-                    presentationFrameNumber++;
-                    performanceLog?.TryWrite(FormattableString.Invariant(
-                        $"{presentationFrameNumber},{ToMilliseconds(presentedTimestamp - processStartTimestamp):0.000},{ToMilliseconds(sample.IntervalTicks):0.000},{settings.RenderFrameRate},{displayRefreshRate:0.00},{loadedRom?.Header.FrameRateHz ?? 0:0.00},{verticalSyncEnabled},{(int)controllerButtons},{cpuState?.ProgramBank ?? 0:X2},{cpuState?.ProgramCounter ?? 0:X4},{ToMilliseconds(sample.EmulationTicks):0.000},{ToMilliseconds(sample.GameRenderTicks):0.000},{ToMilliseconds(sample.DrawTicks):0.000},{ToMilliseconds(sample.PresentTicks):0.000},{ToMilliseconds(sample.WaitTicks):0.000},{ToMilliseconds(otherTicks):0.000}"));
 
                     long totalIntervalTicks = 0;
                     long longestIntervalTicks = 0;
@@ -682,6 +664,15 @@ internal static class Program
                     peakEmulationMilliseconds = ToMilliseconds(peakEmulationTicks);
                     peakGameRenderMilliseconds = ToMilliseconds(peakGameRenderTicks);
                     peakPresentMilliseconds = ToMilliseconds(peakPresentTicks);
+                    if (presentedTimestamp >= nextTimingDisplayUpdate)
+                    {
+                        timingDisplay = new FrameTimingDisplay(
+                            $"Output: {measuredPresentedFrameRate:0.0} FPS · longest gap: {longestPresentationIntervalMilliseconds:0.0} ms",
+                            $"Avg ms: CPU {meanEmulationMilliseconds:0.0} · game {meanGameRenderMilliseconds:0.0} · draw {meanDrawMilliseconds:0.0}",
+                            $"Present {meanPresentMilliseconds:0.0} · wait {meanPacerWaitMilliseconds:0.0} · other {meanOtherMilliseconds:0.0} ms",
+                            $"Peak ms: CPU {peakEmulationMilliseconds:0.0} · game {peakGameRenderMilliseconds:0.0} · present {peakPresentMilliseconds:0.0}");
+                        nextTimingDisplayUpdate = presentedTimestamp + Stopwatch.Frequency / 4;
+                    }
                 }
                 lastPresentedTimestamp = presentedTimestamp;
                 emulationTicksSinceLastPresentation = 0;
@@ -700,7 +691,14 @@ internal static class Program
 
                 var updatedRenderIntervalTicks = Math.Max(1, (long)Math.Round(Stopwatch.Frequency / presentationFrameRate));
                 nextPresentationTimestamp += updatedRenderIntervalTicks;
-                if (nextPresentationTimestamp <= presentedTimestamp)
+                if (!verticalSyncEnabled)
+                {
+                    // A small overrun can recover at the next scheduled present.
+                    // Only restart the clock after a stall longer than a whole slot.
+                    if (presentedTimestamp - nextPresentationTimestamp > updatedRenderIntervalTicks)
+                        nextPresentationTimestamp = presentedTimestamp + updatedRenderIntervalTicks;
+                }
+                else if (nextPresentationTimestamp <= presentedTimestamp)
                 {
                     // Skip missed deadlines while keeping the presentation cadence on its
                     // original phase. Restarting from now can cause catch-up frames to
@@ -719,12 +717,9 @@ internal static class Program
             }
 
             var timeUntilNextPresentation = nextPresentationTimestamp - timestampAfterPresent;
-            if (timeUntilNextPresentation > 0)
+            if (verticalSyncEnabled && timeUntilNextPresentation > 0)
             {
-                var delayNanoseconds = (ulong)(timeUntilNextPresentation * 1_000_000_000.0 / Stopwatch.Frequency);
-                var delayStartTimestamp = Stopwatch.GetTimestamp();
-                SDL.DelayPrecise(delayNanoseconds);
-                pacerWaitTicksSinceLastPresentation += Stopwatch.GetTimestamp() - delayStartTimestamp;
+                pacerWaitTicksSinceLastPresentation += WaitUntil(nextPresentationTimestamp);
             }
         }
 
@@ -736,7 +731,6 @@ internal static class Program
         }
 
         textRenderer?.Dispose();
-        performanceLog?.Dispose();
         SDL.DestroyTexture(gameTexture);
         SDL.DestroyRenderer(renderer);
         SDL.DestroyWindow(window);
@@ -795,6 +789,16 @@ internal static class Program
     private static double ToMilliseconds(long ticks)
     {
         return ticks * 1_000.0 / Stopwatch.Frequency;
+    }
+
+    private static long WaitUntil(long deadlineTimestamp)
+    {
+        var startTimestamp = Stopwatch.GetTimestamp();
+        var remainingTicks = deadlineTimestamp - startTimestamp;
+        if (remainingTicks <= 0) return 0;
+        var nanoseconds = (ulong)(remainingTicks * 1_000_000_000.0 / Stopwatch.Frequency);
+        SDL.DelayPrecise(nanoseconds);
+        return Stopwatch.GetTimestamp() - startTimestamp;
     }
 
     private static double GetPresentationFrameRate(int configuredRate, double displayRefreshRate, int refreshDivisor)
@@ -1198,20 +1202,7 @@ internal static class Program
         string audioError,
         bool verticalSyncEnabled,
         double displayRefreshRate,
-        double measuredPresentedFrameRate,
-        double longestPresentationIntervalMilliseconds,
-        double meanEmulationMilliseconds,
-        double meanGameRenderMilliseconds,
-        double meanDrawMilliseconds,
-        double meanPresentMilliseconds,
-        double meanPacerWaitMilliseconds,
-        double meanOtherMilliseconds,
-        double peakEmulationMilliseconds,
-        double peakGameRenderMilliseconds,
-        double peakPresentMilliseconds,
-        string? performanceLogPath,
-        string? performanceLogError,
-        long droppedLogRowCount)
+        FrameTimingDisplay timingDisplay)
     {
         SDL.SetRenderDrawColor(renderer, 8, 11, 18, 248);
         SDL.RenderFillRect(renderer, in panel);
@@ -1244,10 +1235,7 @@ internal static class Program
             DrawText(renderer, textRenderer, "Display settings do not change physics.",
                 panel.X + 20, panel.Y + 300, 12, MakeUiColor(181, 194, 211));
 
-            var measuredOutputText = measuredPresentedFrameRate > 0
-                ? $"Output: {measuredPresentedFrameRate:0.0} FPS · longest gap: {longestPresentationIntervalMilliseconds:0.0} ms"
-                : "Output: collecting frame timing...";
-            DrawText(renderer, textRenderer, measuredOutputText,
+            DrawText(renderer, textRenderer, timingDisplay.Output,
                 panel.X + 20, panel.Y + 324, 12, MakeUiColor(181, 194, 211));
             var displayRefreshText = displayRefreshRate > 0
                 ? $"Display refresh: {displayRefreshRate:0.##} Hz"
@@ -1255,26 +1243,14 @@ internal static class Program
             DrawText(renderer, textRenderer, displayRefreshText,
                 panel.X + 20, panel.Y + 344, 12, MakeUiColor(181, 194, 211));
             DrawText(renderer, textRenderer,
-                $"Avg ms: CPU {meanEmulationMilliseconds:0.0} · game {meanGameRenderMilliseconds:0.0} · draw {meanDrawMilliseconds:0.0}",
+                timingDisplay.Work,
                 panel.X + 20, panel.Y + 368, 11, MakeUiColor(181, 194, 211));
             DrawText(renderer, textRenderer,
-                $"Present {meanPresentMilliseconds:0.0} · wait {meanPacerWaitMilliseconds:0.0} · other {meanOtherMilliseconds:0.0} ms",
+                timingDisplay.Wait,
                 panel.X + 20, panel.Y + 386, 11, MakeUiColor(181, 194, 211));
             DrawText(renderer, textRenderer,
-                $"Peak ms: CPU {peakEmulationMilliseconds:0.0} · game {peakGameRenderMilliseconds:0.0} · present {peakPresentMilliseconds:0.0}",
+                timingDisplay.Peak,
                 panel.X + 20, panel.Y + 404, 11, MakeUiColor(181, 194, 211));
-            var logName = performanceLogPath is null ? "unavailable" : Path.GetFileName(performanceLogPath);
-            DrawText(renderer, textRenderer, $"Frame CSV: {logName}",
-                panel.X + 20, panel.Y + 428, 11, MakeUiColor(181, 194, 211));
-            var logStatus = !string.IsNullOrWhiteSpace(performanceLogError)
-                ? $"Log error: {performanceLogError}"
-                : droppedLogRowCount > 0
-                    ? $"Log skipped {droppedLogRowCount} rows"
-                    : "Path: %LOCALAPPDATA%\\SMW2PC\\logs";
-            DrawText(renderer, textRenderer,
-                Truncate(logStatus, Math.Max(16, (int)((panel.W - 40) / 6))),
-                panel.X + 20, panel.Y + 446, 10, MakeUiColor(181, 194, 211));
-
             var systemStatus = !string.IsNullOrWhiteSpace(audioError)
                 ? audioError
                 : !verticalSyncEnabled
