@@ -12,7 +12,7 @@ internal static class Program
     private const string CompiledRomResourceName = "Smw2Pc.Desktop.CompiledRom";
     private const int InstructionsPerFrame = 18000;
     private const int MaximumCatchUpFrames = 5;
-    private const int MaximumSoftwarePresentationRate = 120;
+    private const int MaximumSoftwarePresentationRate = DesktopSettings.MaximumRenderFrameRate;
     private static readonly long SettingsSaveDelayTicks = Stopwatch.Frequency / 2;
     private static readonly (int Width, int Height)[] ResolutionPresets =
     [
@@ -127,7 +127,8 @@ internal static class Program
         var verticalSyncEnabled = TrySetPresentationVSync(
             renderer,
             displayRefreshRate,
-            presentationRefreshDivisor);
+            presentationRefreshDivisor,
+            presentationFrameRate);
         var nextDisplayModeCheck = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
         var audioError = string.Empty;
         var audioStream = IntPtr.Zero;
@@ -232,7 +233,8 @@ internal static class Program
                     verticalSyncEnabled = TrySetPresentationVSync(
                         renderer,
                         displayRefreshRate,
-                        presentationRefreshDivisor);
+                        presentationRefreshDivisor,
+                        presentationFrameRate);
                     configuredRenderRate = settings.RenderFrameRate;
                     consecutiveOverBudgetFrames = 0;
                     consecutiveUnderBudgetFrames = 0;
@@ -252,7 +254,8 @@ internal static class Program
                         verticalSyncEnabled = TrySetPresentationVSync(
                             renderer,
                             displayRefreshRate,
-                            presentationRefreshDivisor);
+                            presentationRefreshDivisor,
+                            presentationFrameRate);
                         configuredRenderRate = settings.RenderFrameRate;
                         consecutiveOverBudgetFrames = 0;
                         consecutiveUnderBudgetFrames = 0;
@@ -441,7 +444,8 @@ internal static class Program
                 verticalSyncEnabled = TrySetPresentationVSync(
                     renderer,
                     displayRefreshRate,
-                    presentationRefreshDivisor);
+                    presentationRefreshDivisor,
+                    presentationFrameRate);
                 consecutiveOverBudgetFrames = 0;
                 consecutiveUnderBudgetFrames = 0;
                 smoothedFrameWorkTicks = 0;
@@ -623,7 +627,8 @@ internal static class Program
                             verticalSyncEnabled = TrySetPresentationVSync(
                                 renderer,
                                 displayRefreshRate,
-                                presentationRefreshDivisor);
+                                presentationRefreshDivisor,
+                                presentationFrameRate);
                             nextPresentationTimestamp = presentedTimestamp;
                         }
 
@@ -641,7 +646,8 @@ internal static class Program
                         verticalSyncEnabled = TrySetPresentationVSync(
                             renderer,
                             displayRefreshRate,
-                            presentationRefreshDivisor);
+                            presentationRefreshDivisor,
+                            presentationFrameRate);
                         consecutiveUnderBudgetFrames = 0;
                         nextPresentationTimestamp = presentedTimestamp;
                     }
@@ -718,7 +724,22 @@ internal static class Program
         }
 
         var softwareRateLimit = Math.Min(configuredRate, MaximumSoftwarePresentationRate);
-        return Math.Max(1, (int)Math.Ceiling(displayRefreshRate / softwareRateLimit));
+        var refreshRateTolerance = GetRefreshRateTolerance(softwareRateLimit);
+        if (displayRefreshRate < softwareRateLimit - refreshRateTolerance)
+        {
+            return 0;
+        }
+
+        var nearestDivisor = Math.Max(1, (int)Math.Round(displayRefreshRate / softwareRateLimit));
+        if (Math.Abs((displayRefreshRate / nearestDivisor) - softwareRateLimit)
+            <= refreshRateTolerance)
+        {
+            return nearestDivisor;
+        }
+
+        // Preserve the configured cap when the display cannot present at an exact
+        // integer refresh interval. The software pacer handles those fractional rates.
+        return Math.Max(1, (int)Math.Floor(displayRefreshRate / softwareRateLimit));
     }
 
     private static double GetPresentationFrameRate(int configuredRate, double displayRefreshRate, int refreshDivisor)
@@ -736,25 +757,38 @@ internal static class Program
     private static bool TrySetPresentationVSync(
         IntPtr renderer,
         double displayRefreshRate,
-        int refreshDivisor)
+        int refreshDivisor,
+        double presentationFrameRate)
     {
-        var requestedInterval = double.IsFinite(displayRefreshRate)
-            && displayRefreshRate > 0
-            && refreshDivisor > 0
-                ? refreshDivisor
-                : 1;
-        if (SDL.SetRenderVSync(renderer, requestedInterval))
+        if (!double.IsFinite(displayRefreshRate)
+            || displayRefreshRate <= 0
+            || refreshDivisor <= 0
+            || !double.IsFinite(presentationFrameRate))
         {
-            return true;
+            SDL.SetRenderVSync(renderer, 0);
+            return false;
         }
 
-        if (requestedInterval != 1 && SDL.SetRenderVSync(renderer, 1))
+        var synchronizedFrameRate = displayRefreshRate / refreshDivisor;
+        if (Math.Abs(synchronizedFrameRate - presentationFrameRate)
+            > GetRefreshRateTolerance(presentationFrameRate))
+        {
+            SDL.SetRenderVSync(renderer, 0);
+            return false;
+        }
+
+        if (SDL.SetRenderVSync(renderer, refreshDivisor))
         {
             return true;
         }
 
         SDL.SetRenderVSync(renderer, 0);
         return false;
+    }
+
+    private static double GetRefreshRateTolerance(double frameRate)
+    {
+        return Math.Max(0.25, frameRate * 0.005);
     }
 
     private static void DrawLaunchScreen(
