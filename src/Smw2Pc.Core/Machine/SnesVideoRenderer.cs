@@ -277,16 +277,25 @@ public static class SnesVideoRenderer
         ReadOnlySpan<byte> colorRam,
         float interpolationProgress)
     {
+        var hasColorMathOrMainClip = false;
         var useSubScreen = false;
         for (var scanline = 0; scanline < Height; scanline++)
         {
             var scanlineRegisters = hardware.GetPpuRegistersForScanline(scanline + 1).Span;
-            if ((scanlineRegisters[0x30] & 0x02) != 0 && (scanlineRegisters[0x31] & 0x3F) != 0)
+            var colorWindowSelect = scanlineRegisters[0x30];
+            var scanlineColorMath = scanlineRegisters[0x31] & 0x3F;
+            hasColorMathOrMainClip |= (colorWindowSelect & 0xC0) != 0 || scanlineColorMath != 0;
+            if ((colorWindowSelect & 0x02) != 0 && scanlineColorMath != 0)
             {
                 useSubScreen = true;
-                break;
             }
         }
+
+        if (!hasColorMathOrMainClip)
+        {
+            return;
+        }
+
         byte[]? subPixels = null;
         byte[]? subSources = null;
         ushort[]? subColors = null;
@@ -335,11 +344,9 @@ public static class SnesVideoRenderer
                 }
             }
 
-            for (var pixel = 0; pixel < Width * Height; pixel++)
+            for (var screenY = 0; screenY < Height; screenY++)
             {
-                var x = pixel % Width;
-                var scanline = pixel / Width;
-                var hardwareScanline = scanline + 1;
+                var hardwareScanline = screenY + 1;
                 var scanlineRegisters = hardware.GetPpuRegistersForScanline(hardwareScanline).Span;
                 if ((scanlineRegisters[0] & 0x80) != 0)
                 {
@@ -352,46 +359,59 @@ public static class SnesVideoRenderer
                 var mainClipMode = (colorWindowSelect >> 6) & 0x03;
                 var subMaskMode = (colorWindowSelect >> 4) & 0x03;
                 var useLineSubScreen = (colorWindowSelect & 0x02) != 0;
-                var inColorWindow = IsColorWindowPixel(scanlineRegisters, x);
-                var offset = pixel * BytesPerPixel;
-                if (IsColorMathWindowRegion(mainClipMode, inColorWindow))
-                {
-                    mainColors[pixel] = 0;
-                    WriteColor(mainPixels, offset, ReadColor(0, brightness, forcedBlank: false));
-                }
-
-                if ((scanlineColorMath & 0x3F) == 0)
-                {
-                    continue;
-                }
-
-                var source = mainSources[pixel];
-                var layerMask = source switch
-                {
-                    0 => 0x20,
-                    5 => 0x10,
-                    6 => 0,
-                    _ => 1 << (source - 1),
-                };
-                if ((scanlineColorMath & layerMask) == 0)
-                {
-                    continue;
-                }
-
-                var subIsTransparent = IsColorMathWindowRegion(subMaskMode, inColorWindow);
-                if (subIsTransparent)
-                {
-                    continue;
-                }
-
-                var subIsBackdrop = useLineSubScreen && (subSources is null || subSources[pixel] == 0);
-                var addend = useLineSubScreen && !subIsBackdrop
-                    ? subColors![pixel]
-                    : hardware.GetFixedColorForScanline(hardwareScanline);
+                var colorMathLayers = scanlineColorMath & 0x3F;
+                var needsColorWindow = mainClipMode is 1 or 2
+                    || (colorMathLayers != 0 && subMaskMode is 1 or 2);
                 var subtract = (scanlineColorMath & 0x80) != 0;
-                var applyHalf = (scanlineColorMath & 0x40) != 0 && !subIsBackdrop;
-                mainColors[pixel] = ApplyColorMath(mainColors[pixel], addend, subtract, applyHalf);
-                WriteColor(mainPixels, offset, ReadColor(mainColors[pixel], brightness, forcedBlank: false));
+                var applyHalf = (scanlineColorMath & 0x40) != 0;
+                var fixedColor = colorMathLayers != 0
+                    ? hardware.GetFixedColorForScanline(hardwareScanline)
+                    : (ushort)0;
+                var clippedColor = ReadColor(0, brightness, forcedBlank: false);
+                var firstPixel = screenY * Width;
+                for (var x = 0; x < Width; x++)
+                {
+                    var pixel = firstPixel + x;
+                    var inColorWindow = needsColorWindow && IsColorWindowPixel(scanlineRegisters, x);
+                    var clipMainPixel = mainClipMode == 3
+                        || ((mainClipMode is 1 or 2) && IsColorMathWindowRegion(mainClipMode, inColorWindow));
+                    var offset = pixel * BytesPerPixel;
+                    if (clipMainPixel)
+                    {
+                        mainColors[pixel] = 0;
+                        WriteColor(mainPixels, offset, clippedColor);
+                    }
+
+                    if (colorMathLayers == 0)
+                    {
+                        continue;
+                    }
+
+                    var source = mainSources[pixel];
+                    var layerMask = source switch
+                    {
+                        0 => 0x20,
+                        5 => 0x10,
+                        6 => 0,
+                        _ => 1 << (source - 1),
+                    };
+                    if ((colorMathLayers & layerMask) == 0)
+                    {
+                        continue;
+                    }
+
+                    if (subMaskMode != 0 && IsColorMathWindowRegion(subMaskMode, inColorWindow))
+                    {
+                        continue;
+                    }
+
+                    var subIsBackdrop = useLineSubScreen && (subSources is null || subSources[pixel] == 0);
+                    var addend = useLineSubScreen && !subIsBackdrop
+                        ? subColors![pixel]
+                        : fixedColor;
+                    mainColors[pixel] = ApplyColorMath(mainColors[pixel], addend, subtract, applyHalf && !subIsBackdrop);
+                    WriteColor(mainPixels, offset, ReadColor(mainColors[pixel], brightness, forcedBlank: false));
+                }
             }
         }
         finally
@@ -507,6 +527,31 @@ public static class SnesVideoRenderer
         var logicRegister = layer < 4 ? registers[0x2A] : registers[0x2B];
         var logicShift = layer < 4 ? layer * 2 : 0;
         return ApplyWindowLogic(windowOne, windowTwo, (logicRegister >> logicShift) & 0x03);
+    }
+
+    private static bool HasActiveLayerWindow(ReadOnlySpan<byte> registers, int layer, bool subScreen)
+    {
+        var screenWindowRegister = registers[subScreen ? 0x2F : 0x2E];
+        if ((screenWindowRegister & (1 << layer)) == 0)
+        {
+            return false;
+        }
+
+        var selectorRegister = layer switch
+        {
+            0 or 1 => registers[0x23],
+            2 or 3 => registers[0x24],
+            _ => registers[0x25],
+        };
+        var selectorShift = layer switch
+        {
+            0 or 2 => 0,
+            1 or 3 => 4,
+            _ => 0,
+        };
+        var windowOneEnabled = (selectorRegister & (1 << (selectorShift + 1))) != 0;
+        var windowTwoEnabled = (selectorRegister & (1 << (selectorShift + 3))) != 0;
+        return windowOneEnabled || windowTwoEnabled;
     }
 
     private static bool IsWindowPixel(int x, int left, int right, bool inverted)
@@ -682,10 +727,11 @@ public static class SnesVideoRenderer
         var sourceY = originY + (c * (horizontalDirection < 0 ? 255 : 0));
         var horizontalStepX = a * horizontalDirection;
         var horizontalStepY = c * horizontalDirection;
+        var hasActiveWindow = HasActiveLayerWindow(registers, 0, subScreen);
 
         for (var screenX = 0; screenX < Width; screenX++, sourceX += horizontalStepX, sourceY += horizontalStepY)
         {
-            if (IsLayerWindowed(registers, 0, subScreen, screenX))
+            if (hasActiveWindow && IsLayerWindowed(registers, 0, subScreen, screenX))
             {
                 continue;
             }
@@ -794,6 +840,7 @@ public static class SnesVideoRenderer
         var previousObjectRam = hardware.PreviousObjectAttributeMemory.Span;
         var hasPreviousObjectFrame = hardware.HasPreviousObjectAttributeFrame;
         var objectSizeMode = (registers[1] >> 5) & 0x07;
+        var hasActiveWindow = HasActiveLayerWindow(registers, 4, subScreen);
         var tileBase = (registers[1] & 0x07) * 0x4000;
         var tileNameSelectOffset = (((registers[1] >> 3) & 0x03) + 1) * 0x2000;
         var (smallSize, largeSize) = GetObjectSizes(objectSizeMode);
@@ -886,7 +933,7 @@ public static class SnesVideoRenderer
                     continue;
                 }
 
-                if (IsLayerWindowed(registers, 4, subScreen, screenX))
+                if (hasActiveWindow && IsLayerWindowed(registers, 4, subScreen, screenX))
                 {
                     continue;
                 }
@@ -1058,18 +1105,19 @@ public static class SnesVideoRenderer
         var bitsPerPixel = mode == 0 || (mode == 1 && background == 2) ? 2 : 4;
         var bytesPerTile = bitsPerPixel * 8;
         var scanlineRegisters = registers;
+        var hasActiveWindow = HasActiveLayerWindow(scanlineRegisters, background, subScreen);
+        var sampleY = (int)MathF.Round(
+            screenY + verticalOffset + sampleShiftY,
+            MidpointRounding.AwayFromZero);
         for (var screenX = 0; screenX < Width; screenX++)
         {
-            if (IsLayerWindowed(scanlineRegisters, background, subScreen, screenX))
+            if (hasActiveWindow && IsLayerWindowed(scanlineRegisters, background, subScreen, screenX))
             {
                 continue;
             }
 
             var sampleX = (int)MathF.Round(
                 screenX + horizontalOffset + sampleShiftX,
-                MidpointRounding.AwayFromZero);
-            var sampleY = (int)MathF.Round(
-                screenY + verticalOffset + sampleShiftY,
                 MidpointRounding.AwayFromZero);
             var pixelIndex = (screenY * Width) + screenX;
             if (TrySampleBackgroundColor(
@@ -1117,22 +1165,15 @@ public static class SnesVideoRenderer
         ReadOnlySpan<byte> colorRam,
         out ushort colorValue)
     {
-        worldX %= pixelWidth;
-        worldY %= pixelHeight;
-        if (worldX < 0)
-        {
-            worldX += pixelWidth;
-        }
-
-        if (worldY < 0)
-        {
-            worldY += pixelHeight;
-        }
-
-        var cellX = worldX / tileWidth;
-        var cellY = worldY / tileHeight;
-        var localX = worldX % tileWidth;
-        var localY = worldY % tileHeight;
+        // SNES tilemaps use power-of-two dimensions (32 or 64 tiles in each axis),
+        // so masking and shifts preserve negative wrapping without per-pixel division.
+        worldX &= pixelWidth - 1;
+        worldY &= pixelHeight - 1;
+        var tileShift = tileWidth == 8 ? 3 : 4;
+        var cellX = worldX >> tileShift;
+        var cellY = worldY >> tileShift;
+        var localX = worldX & (tileWidth - 1);
+        var localY = worldY & (tileHeight - 1);
         var mapIndex = GetMapByteIndex(mapBase, mapWidth, cellX, cellY);
         var tileEntry = (ushort)(videoRam[mapIndex] | (videoRam[mapIndex + 1] << 8));
         if (priority >= 0 && ((tileEntry & 0x2000) != 0) != (priority != 0))
@@ -1154,7 +1195,7 @@ public static class SnesVideoRenderer
         var tileNumber = tileEntry & 0x03FF;
         if (tileWidth == 16)
         {
-            tileNumber += ((localY / 8) * 16) + (localX / 8);
+            tileNumber += ((localY >> 3) * 16) + (localX >> 3);
             localX &= 7;
             localY &= 7;
         }
@@ -1176,7 +1217,7 @@ public static class SnesVideoRenderer
 
     private static int GetMapByteIndex(int mapBase, int mapWidth, int cellX, int cellY)
     {
-        var quadrant = (cellX / 32) + ((cellY / 32) * (mapWidth / 32));
+        var quadrant = (cellX >> 5) + ((cellY >> 5) * (mapWidth >> 5));
         var cellInQuadrant = ((cellY & 31) * 32) + (cellX & 31);
         return (mapBase + (quadrant * 0x800) + (cellInQuadrant * 2)) & 0xFFFF;
     }
