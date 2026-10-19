@@ -1,4 +1,4 @@
-name: Build Windows
+name: Build desktop packages
 run-name: ${{ github.ref_type == 'tag' && format('Release {0}', github.ref_name) || (inputs.build_type == 'release' && format('Release {0}', inputs.tag_name) || 'Dev build') }}
 
 on:
@@ -42,6 +42,7 @@ jobs:
       ref: ${{ steps.version.outputs.ref }}
       channel: ${{ steps.version.outputs.channel }}
       artifact: ${{ steps.version.outputs.artifact }}
+      linux_artifact: SMW2PC-${{ steps.version.outputs.version }}-linux-x64
     steps:
       - uses: actions/checkout@v7
         with:
@@ -91,10 +92,41 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  package-linux:
+    name: Linux x64 builder
+    needs: [prepare, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Package the ROM builder
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+        run: ./tools/package-builder.ps1 -Version $env:BUILD_VERSION -RuntimeIdentifier linux-x64
+      - name: Verify packaged compilation without a ROM or SDK installation
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+        run: ./tools/test-builder-package.ps1 -Archive "artifacts/distribution/SMW2PC-$env:BUILD_VERSION-linux-x64.tar.gz" -Version $env:BUILD_VERSION -RuntimeIdentifier linux-x64
+      - name: Upload versioned Linux build
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.prepare.outputs.linux_artifact }}
+          path: |
+            artifacts/distribution/*.tar.gz
+            artifacts/distribution/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: Publish GitHub release
     if: needs.prepare.outputs.channel == 'release'
-    needs: [prepare, package]
+    needs: [prepare, package, package-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -102,6 +134,10 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare.outputs.artifact }}
+          path: release-assets
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.prepare.outputs.linux_artifact }}
           path: release-assets
       - name: Publish tagged release
         env:
