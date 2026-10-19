@@ -59,10 +59,11 @@ internal static class GameBuilder
             var coreVersion = AssemblyName.GetAssemblyName(corePath).Version!;
             var playerPath = Path.Combine(template, "SMW.dll");
             var playerVersion = AssemblyName.GetAssemblyName(playerPath).Version!;
+            var playerIconPath = Path.Combine(template, "SMW2PC.ico");
             var coreSources = Directory.GetFiles(Path.Combine(workspace, "source", "core"), "*.cs", SearchOption.AllDirectories)
                 .Concat(Directory.GetFiles(generated, "*.cs"));
             Log("Compiling game code...");
-            Compile("Smw2Pc.Core", coreVersion, coreSources, corePath, references, [], false, cancellationToken);
+            Compile("Smw2Pc.Core", coreVersion, coreSources, corePath, references, [], false, null, cancellationToken);
 
             Log("Compiling player...");
             var playerReferences = references.Concat(new[]
@@ -79,7 +80,9 @@ internal static class GameBuilder
             };
             Compile("SMW", playerVersion,
                 Directory.GetFiles(Path.Combine(workspace, "source", "desktop"), "*.cs", SearchOption.AllDirectories),
-                playerPath, playerReferences, resources, true, cancellationToken);
+                playerPath, playerReferences, resources, true,
+                File.Exists(playerIconPath) ? playerIconPath : null,
+                cancellationToken);
 
             var readyToRunDirectory = Path.Combine(workspace, "ready-to-run");
             Directory.CreateDirectory(readyToRunDirectory);
@@ -135,7 +138,7 @@ internal static class GameBuilder
 
     private static void Compile(string name, Version version, IEnumerable<string> sourceFiles, string output,
         IEnumerable<MetadataReference> references, IEnumerable<ResourceDescription> resources,
-        bool application, CancellationToken cancellationToken)
+        bool application, string? iconPath, CancellationToken cancellationToken)
     {
         var parseOptions = new CSharpParseOptions(LanguageVersion.CSharp14,
             preprocessorSymbols: ["SMW2PC_RECOMPILED", "NET", "NET10_0", "NET10_0_OR_GREATER"]);
@@ -165,7 +168,8 @@ internal static class GameBuilder
                 optimizationLevel: OptimizationLevel.Release, nullableContextOptions: NullableContextOptions.Enable));
         // Release the template DLL before emitting its ROM-specific replacement.
         using var outputStream = File.Create(output);
-        using var win32 = application ? compilation.CreateDefaultWin32Resources(true, false, null, null) : null;
+        using var iconContents = application && iconPath is not null ? File.OpenRead(iconPath) : null;
+        using var win32 = application ? compilation.CreateDefaultWin32Resources(true, false, null, iconContents) : null;
         var result = compilation.Emit(outputStream, manifestResources: resources, win32Resources: win32, cancellationToken: cancellationToken);
         if (!result.Success)
             throw new InvalidDataException("Game compilation failed:\n" + string.Join("\n",

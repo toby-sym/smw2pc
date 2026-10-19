@@ -6,6 +6,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <ApplicationIcon Condition="Exists('$(MSBuildProjectDirectory)\..\..\assets\SMW2PC.ico')">$(MSBuildProjectDirectory)\..\..\assets\SMW2PC.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
