@@ -52,6 +52,16 @@ internal static class Program
 
     private readonly record struct BindingRow(GameAction Action, string Label, string Hint);
 
+    private struct PresentationTimingSample
+    {
+        public long IntervalTicks;
+        public long EmulationTicks;
+        public long GameRenderTicks;
+        public long DrawTicks;
+        public long PresentTicks;
+        public long WaitTicks;
+    }
+
     private static readonly BindingRow[] BindingRows =
     [
         new(GameAction.Left, "Move left", "D-pad"),
@@ -118,6 +128,8 @@ internal static class Program
         var textRenderer = UiTextRenderer.TryCreate(
             renderer,
             BundledAssets.GetFontPath());
+        var performanceLog = PresentationLogWriter.TryCreate(out var performanceLogCreationError);
+        performanceLog?.TryWrite("frame,elapsed_ms,interval_ms,presentation_cap_fps,display_refresh_hz,game_hz,vsync_enabled,buttons,cpu_bank,cpu_pc,emulation_ms,game_render_ms,draw_ms,present_ms,pacer_wait_ms,other_ms");
 
         SDL.SetTextureScaleMode(gameTexture, SDL.ScaleMode.Nearest);
         var displayId = SDL.GetDisplayForWindow(window);
@@ -177,12 +189,28 @@ internal static class Program
         var settingsSavePending = false;
         var settingsSaveTimestamp = 0L;
         var smoothedRenderToPresentTicks = 0L;
-        var presentationIntervals = new long[PresentationIntervalSampleCount];
+        var presentationSamples = new PresentationTimingSample[PresentationIntervalSampleCount];
         var presentationIntervalCount = 0;
         var nextPresentationIntervalIndex = 0;
         var lastPresentedTimestamp = 0L;
         var measuredPresentedFrameRate = 0.0;
         var longestPresentationIntervalMilliseconds = 0.0;
+        var meanEmulationMilliseconds = 0.0;
+        var meanGameRenderMilliseconds = 0.0;
+        var meanDrawMilliseconds = 0.0;
+        var meanPresentMilliseconds = 0.0;
+        var meanPacerWaitMilliseconds = 0.0;
+        var meanOtherMilliseconds = 0.0;
+        var peakEmulationMilliseconds = 0.0;
+        var peakGameRenderMilliseconds = 0.0;
+        var peakPresentMilliseconds = 0.0;
+        var emulationTicksSinceLastPresentation = 0L;
+        var gameRenderTicksSinceLastPresentation = 0L;
+        var drawTicksSinceLastPresentation = 0L;
+        var presentTicksSinceLastPresentation = 0L;
+        var pacerWaitTicksSinceLastPresentation = 0L;
+        var processStartTimestamp = Stopwatch.GetTimestamp();
+        long presentationFrameNumber = 0;
 
         using (var compiledRomStream = typeof(Program).Assembly.GetManifestResourceStream(CompiledRomResourceName))
         {
@@ -445,6 +473,7 @@ internal static class Program
 
             if (cpuRunner is not null)
             {
+                var emulationWorkStartTimestamp = Stopwatch.GetTimestamp();
                 try
                 {
                     var frameDuration = 1.0 / loadedRom!.Header.FrameRateHz;
@@ -470,6 +499,9 @@ internal static class Program
                         }
                     }
 
+                    emulationTicksSinceLastPresentation += Stopwatch.GetTimestamp() - emulationWorkStartTimestamp;
+                    emulationWorkStartTimestamp = 0;
+
                     if (renderRequested)
                     {
                         var renderTimestamp = Stopwatch.GetTimestamp();
@@ -487,6 +519,7 @@ internal static class Program
                         {
                             statusMessage = $"Could not update the game frame: {SDL.GetError()}";
                         }
+                        gameRenderTicksSinceLastPresentation += Stopwatch.GetTimestamp() - presentedFrameRendererStart;
                     }
                 }
                 catch (Exception exception) when (exception is NotSupportedException or InvalidOperationException)
@@ -498,6 +531,13 @@ internal static class Program
                     }
                     cpuRunner = null;
                     frameAccumulator = 0;
+                }
+                finally
+                {
+                    if (emulationWorkStartTimestamp != 0)
+                    {
+                        emulationTicksSinceLastPresentation += Stopwatch.GetTimestamp() - emulationWorkStartTimestamp;
+                    }
                 }
             }
             else
@@ -519,6 +559,7 @@ internal static class Program
                 launchButton = GetLaunchButton(gameArea);
                 settingsButton = GetSettingsButton(outputWidth);
                 settingsPanel = GetSettingsPanel(outputWidth, outputHeight);
+                var drawStartTimestamp = Stopwatch.GetTimestamp();
                 SDL.SetRenderDrawColor(renderer, 8, 11, 18, 255);
                 SDL.RenderClear(renderer);
 
@@ -548,25 +589,81 @@ internal static class Program
                         verticalSyncEnabled,
                         displayRefreshRate,
                         measuredPresentedFrameRate,
-                        longestPresentationIntervalMilliseconds);
+                        longestPresentationIntervalMilliseconds,
+                        meanEmulationMilliseconds,
+                        meanGameRenderMilliseconds,
+                        meanDrawMilliseconds,
+                        meanPresentMilliseconds,
+                        meanPacerWaitMilliseconds,
+                        meanOtherMilliseconds,
+                        peakEmulationMilliseconds,
+                        peakGameRenderMilliseconds,
+                        peakPresentMilliseconds,
+                        performanceLog?.FilePath,
+                        performanceLogCreationError ?? performanceLog?.ErrorMessage,
+                        performanceLog?.DroppedRowCount ?? 0);
                 }
 
+                drawTicksSinceLastPresentation += Stopwatch.GetTimestamp() - drawStartTimestamp;
+                var presentStartTimestamp = Stopwatch.GetTimestamp();
                 SDL.RenderPresent(renderer);
 
                 var presentedTimestamp = Stopwatch.GetTimestamp();
+                presentTicksSinceLastPresentation += presentedTimestamp - presentStartTimestamp;
                 if (lastPresentedTimestamp != 0)
                 {
-                    presentationIntervals[nextPresentationIntervalIndex] = presentedTimestamp - lastPresentedTimestamp;
-                    nextPresentationIntervalIndex = (nextPresentationIntervalIndex + 1) % presentationIntervals.Length;
-                    presentationIntervalCount = Math.Min(presentationIntervalCount + 1, presentationIntervals.Length);
+                    var sample = new PresentationTimingSample
+                    {
+                        IntervalTicks = presentedTimestamp - lastPresentedTimestamp,
+                        EmulationTicks = emulationTicksSinceLastPresentation,
+                        GameRenderTicks = gameRenderTicksSinceLastPresentation,
+                        DrawTicks = drawTicksSinceLastPresentation,
+                        PresentTicks = presentTicksSinceLastPresentation,
+                        WaitTicks = pacerWaitTicksSinceLastPresentation,
+                    };
+                    presentationSamples[nextPresentationIntervalIndex] = sample;
+                    nextPresentationIntervalIndex = (nextPresentationIntervalIndex + 1) % presentationSamples.Length;
+                    presentationIntervalCount = Math.Min(presentationIntervalCount + 1, presentationSamples.Length);
+
+                    var otherTicks = Math.Max(0,
+                        sample.IntervalTicks
+                            - sample.EmulationTicks
+                            - sample.GameRenderTicks
+                            - sample.DrawTicks
+                            - sample.PresentTicks
+                            - sample.WaitTicks);
+                    var cpuState = cpuRunner?.State;
+                    presentationFrameNumber++;
+                    performanceLog?.TryWrite(FormattableString.Invariant(
+                        $"{presentationFrameNumber},{ToMilliseconds(presentedTimestamp - processStartTimestamp):0.000},{ToMilliseconds(sample.IntervalTicks):0.000},{settings.RenderFrameRate},{displayRefreshRate:0.00},{loadedRom?.Header.FrameRateHz ?? 0:0.00},{verticalSyncEnabled},{(int)controllerButtons},{cpuState?.ProgramBank ?? 0:X2},{cpuState?.ProgramCounter ?? 0:X4},{ToMilliseconds(sample.EmulationTicks):0.000},{ToMilliseconds(sample.GameRenderTicks):0.000},{ToMilliseconds(sample.DrawTicks):0.000},{ToMilliseconds(sample.PresentTicks):0.000},{ToMilliseconds(sample.WaitTicks):0.000},{ToMilliseconds(otherTicks):0.000}"));
 
                     long totalIntervalTicks = 0;
                     long longestIntervalTicks = 0;
-                    for (var index = 0; index < presentationIntervalCount; index++)
+                    long totalEmulationTicks = 0;
+                    long totalGameRenderTicks = 0;
+                    long totalDrawTicks = 0;
+                    long totalPresentTicks = 0;
+                    long totalWaitTicks = 0;
+                    long peakEmulationTicks = 0;
+                    long peakGameRenderTicks = 0;
+                    long peakPresentTicks = 0;
+                    foreach (var timingSample in presentationSamples)
                     {
-                        var intervalTicks = presentationIntervals[index];
-                        totalIntervalTicks += intervalTicks;
-                        longestIntervalTicks = Math.Max(longestIntervalTicks, intervalTicks);
+                        if (timingSample.IntervalTicks == 0)
+                        {
+                            continue;
+                        }
+
+                        totalIntervalTicks += timingSample.IntervalTicks;
+                        longestIntervalTicks = Math.Max(longestIntervalTicks, timingSample.IntervalTicks);
+                        totalEmulationTicks += timingSample.EmulationTicks;
+                        totalGameRenderTicks += timingSample.GameRenderTicks;
+                        totalDrawTicks += timingSample.DrawTicks;
+                        totalPresentTicks += timingSample.PresentTicks;
+                        totalWaitTicks += timingSample.WaitTicks;
+                        peakEmulationTicks = Math.Max(peakEmulationTicks, timingSample.EmulationTicks);
+                        peakGameRenderTicks = Math.Max(peakGameRenderTicks, timingSample.GameRenderTicks);
+                        peakPresentTicks = Math.Max(peakPresentTicks, timingSample.PresentTicks);
                     }
 
                     measuredPresentedFrameRate = totalIntervalTicks > 0
@@ -574,8 +671,24 @@ internal static class Program
                         : 0;
                     longestPresentationIntervalMilliseconds =
                         longestIntervalTicks * 1_000.0 / Stopwatch.Frequency;
+                    var sampleCount = Math.Max(1, presentationIntervalCount);
+                    meanEmulationMilliseconds = ToMilliseconds(totalEmulationTicks / sampleCount);
+                    meanGameRenderMilliseconds = ToMilliseconds(totalGameRenderTicks / sampleCount);
+                    meanDrawMilliseconds = ToMilliseconds(totalDrawTicks / sampleCount);
+                    meanPresentMilliseconds = ToMilliseconds(totalPresentTicks / sampleCount);
+                    meanPacerWaitMilliseconds = ToMilliseconds(totalWaitTicks / sampleCount);
+                    var classifiedTicks = totalEmulationTicks + totalGameRenderTicks + totalDrawTicks + totalPresentTicks + totalWaitTicks;
+                    meanOtherMilliseconds = ToMilliseconds(Math.Max(0, (totalIntervalTicks - classifiedTicks) / sampleCount));
+                    peakEmulationMilliseconds = ToMilliseconds(peakEmulationTicks);
+                    peakGameRenderMilliseconds = ToMilliseconds(peakGameRenderTicks);
+                    peakPresentMilliseconds = ToMilliseconds(peakPresentTicks);
                 }
                 lastPresentedTimestamp = presentedTimestamp;
+                emulationTicksSinceLastPresentation = 0;
+                gameRenderTicksSinceLastPresentation = 0;
+                drawTicksSinceLastPresentation = 0;
+                presentTicksSinceLastPresentation = 0;
+                pacerWaitTicksSinceLastPresentation = 0;
 
                 if (presentedFrameRendererStart != 0)
                 {
@@ -609,7 +722,9 @@ internal static class Program
             if (timeUntilNextPresentation > 0)
             {
                 var delayNanoseconds = (ulong)(timeUntilNextPresentation * 1_000_000_000.0 / Stopwatch.Frequency);
+                var delayStartTimestamp = Stopwatch.GetTimestamp();
                 SDL.DelayPrecise(delayNanoseconds);
+                pacerWaitTicksSinceLastPresentation += Stopwatch.GetTimestamp() - delayStartTimestamp;
             }
         }
 
@@ -621,6 +736,7 @@ internal static class Program
         }
 
         textRenderer?.Dispose();
+        performanceLog?.Dispose();
         SDL.DestroyTexture(gameTexture);
         SDL.DestroyRenderer(renderer);
         SDL.DestroyWindow(window);
@@ -674,6 +790,11 @@ internal static class Program
         // Preserve the configured cap when the display cannot present at an exact
         // integer refresh interval. The software pacer handles those fractional rates.
         return Math.Max(1, (int)Math.Floor(displayRefreshRate / softwareRateLimit));
+    }
+
+    private static double ToMilliseconds(long ticks)
+    {
+        return ticks * 1_000.0 / Stopwatch.Frequency;
     }
 
     private static double GetPresentationFrameRate(int configuredRate, double displayRefreshRate, int refreshDivisor)
@@ -1078,7 +1199,19 @@ internal static class Program
         bool verticalSyncEnabled,
         double displayRefreshRate,
         double measuredPresentedFrameRate,
-        double longestPresentationIntervalMilliseconds)
+        double longestPresentationIntervalMilliseconds,
+        double meanEmulationMilliseconds,
+        double meanGameRenderMilliseconds,
+        double meanDrawMilliseconds,
+        double meanPresentMilliseconds,
+        double meanPacerWaitMilliseconds,
+        double meanOtherMilliseconds,
+        double peakEmulationMilliseconds,
+        double peakGameRenderMilliseconds,
+        double peakPresentMilliseconds,
+        string? performanceLogPath,
+        string? performanceLogError,
+        long droppedLogRowCount)
     {
         SDL.SetRenderDrawColor(renderer, 8, 11, 18, 248);
         SDL.RenderFillRect(renderer, in panel);
@@ -1121,6 +1254,26 @@ internal static class Program
                 : "Display refresh: unavailable";
             DrawText(renderer, textRenderer, displayRefreshText,
                 panel.X + 20, panel.Y + 344, 12, MakeUiColor(181, 194, 211));
+            DrawText(renderer, textRenderer,
+                $"Avg ms: CPU {meanEmulationMilliseconds:0.0} · game {meanGameRenderMilliseconds:0.0} · draw {meanDrawMilliseconds:0.0}",
+                panel.X + 20, panel.Y + 368, 11, MakeUiColor(181, 194, 211));
+            DrawText(renderer, textRenderer,
+                $"Present {meanPresentMilliseconds:0.0} · wait {meanPacerWaitMilliseconds:0.0} · other {meanOtherMilliseconds:0.0} ms",
+                panel.X + 20, panel.Y + 386, 11, MakeUiColor(181, 194, 211));
+            DrawText(renderer, textRenderer,
+                $"Peak ms: CPU {peakEmulationMilliseconds:0.0} · game {peakGameRenderMilliseconds:0.0} · present {peakPresentMilliseconds:0.0}",
+                panel.X + 20, panel.Y + 404, 11, MakeUiColor(181, 194, 211));
+            var logName = performanceLogPath is null ? "unavailable" : Path.GetFileName(performanceLogPath);
+            DrawText(renderer, textRenderer, $"Frame CSV: {logName}",
+                panel.X + 20, panel.Y + 428, 11, MakeUiColor(181, 194, 211));
+            var logStatus = !string.IsNullOrWhiteSpace(performanceLogError)
+                ? $"Log error: {performanceLogError}"
+                : droppedLogRowCount > 0
+                    ? $"Log skipped {droppedLogRowCount} rows"
+                    : "Path: %LOCALAPPDATA%\\SMW2PC\\logs";
+            DrawText(renderer, textRenderer,
+                Truncate(logStatus, Math.Max(16, (int)((panel.W - 40) / 6))),
+                panel.X + 20, panel.Y + 446, 10, MakeUiColor(181, 194, 211));
 
             var systemStatus = !string.IsNullOrWhiteSpace(audioError)
                 ? audioError
