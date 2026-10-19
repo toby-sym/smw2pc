@@ -1,12 +1,12 @@
 # SMW2PC
 
-SMW2PC turns your Super Mario World ROM into a portable Windows game.
+SMW2PC turns your Super Mario World ROM into a portable native game for Windows and macOS.
 
 ## Run
 
-Download and extract a Windows ZIP from **Releases**, or a dev artifact from **Actions**.
-Open **SMW2PC.exe**, click **Add ROM**, and select your `.sfc` or `.smc` file.
-When the build finishes, run **SMW.exe** from the same folder.
+Download and extract the Windows or macOS build from **Releases**, or a dev artifact from **Actions**.
+Open **SMW2PC.exe** on Windows or **SMW2PC.app** on macOS, click **Add ROM**, and select your `.sfc` or `.smc` file.
+When the build finishes, run **SMW.exe** on Windows or open **SMW.app** on macOS from the same folder.
 
 The builder includes its compiler and runtime. No SDK, source checkout, or internet connection is needed.
 Build errors are logged to `%LOCALAPPDATA%\SMW2PC\build.log`.
@@ -17,9 +17,9 @@ Arrows move; **Z** jumps; **X** runs. **Enter** starts or pauses; **F2** opens s
 
 ## Development and releases
 
-Every branch push and pull request produces a versioned Windows dev artifact.
-Push a tag such as `v0.1.0` to publish a GitHub Release with a Windows ZIP and SHA-256 checksum.
-The **Build Windows** workflow also supports manual dev or release builds; releases require a `vX.Y.Z` tag.
+Every branch push and pull request produces versioned Windows and macOS dev artifacts.
+Push a tag such as `v0.1.0` to publish a GitHub Release with Windows, macOS Intel, and macOS Apple Silicon ZIPs and SHA-256 checksums.
+The **Build desktop apps** workflow also supports manual dev or release builds; releases require a `vX.Y.Z` tag.
 `Version.props` sets the base version for dev builds.
 
 With the .NET 10 SDK installed, package the builder using `./tools/package-builder.ps1`.

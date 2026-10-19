@@ -39,7 +39,7 @@ $result = [ordered] @{
     tag = $TagName
     ref = $sourceCommit
     channel = $BuildType
-    artifact = "SMW2PC-$version-win-x64"
+    artifact = "SMW2PC-$version"
 }
 if ($env:GITHUB_OUTPUT) {
     foreach ($entry in $result.GetEnumerator()) { "$($entry.Key)=$($entry.Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }

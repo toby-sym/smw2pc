@@ -1,4 +1,4 @@
-name: Build Windows
+name: Build desktop apps
 run-name: ${{ github.ref_type == 'tag' && format('Release {0}', github.ref_name) || (inputs.build_type == 'release' && format('Release {0}', inputs.tag_name) || 'Dev build') }}
 
 on:
@@ -84,7 +84,48 @@ jobs:
       - name: Upload versioned Windows build
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ needs.prepare.outputs.artifact }}
+          name: ${{ needs.prepare.outputs.artifact }}-win-x64
+          path: |
+            artifacts/distribution/*.zip
+            artifacts/distribution/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  package-macos:
+    name: macOS ${{ matrix.rid }} builder
+    needs: [prepare, verify]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            rid: osx-arm64
+          - runner: macos-15-intel
+            rid: osx-x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Package the ROM builder
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+          RUNTIME_IDENTIFIER: ${{ matrix.rid }}
+        run: ./tools/package-builder.ps1 -Version $env:BUILD_VERSION -RuntimeIdentifier $env:RUNTIME_IDENTIFIER
+      - name: Verify packaged compilation without a ROM or SDK installation
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+          RUNTIME_IDENTIFIER: ${{ matrix.rid }}
+        run: ./tools/test-builder-package.ps1 -Archive "artifacts/distribution/SMW2PC-$env:BUILD_VERSION-$env:RUNTIME_IDENTIFIER.zip" -Version $env:BUILD_VERSION -RuntimeIdentifier $env:RUNTIME_IDENTIFIER
+      - name: Upload versioned macOS build
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.prepare.outputs.artifact }}-${{ matrix.rid }}
           path: |
             artifacts/distribution/*.zip
             artifacts/distribution/*.sha256
@@ -94,14 +135,15 @@ jobs:
   release:
     name: Publish GitHub release
     if: needs.prepare.outputs.channel == 'release'
-    needs: [prepare, package]
+    needs: [prepare, package, package-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: ${{ needs.prepare.outputs.artifact }}
+          pattern: ${{ needs.prepare.outputs.artifact }}-*
+          merge-multiple: true
           path: release-assets
       - name: Publish tagged release
         env:
