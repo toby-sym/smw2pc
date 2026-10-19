@@ -1,4 +1,4 @@
-name: Build desktop apps
+name: Build
 run-name: ${{ github.ref_type == 'tag' && format('Release {0}', github.ref_name) || (inputs.build_type == 'release' && format('Release {0}', inputs.tag_name) || 'Dev build') }}
 
 on:

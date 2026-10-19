@@ -19,7 +19,7 @@ Arrows move; **Z** jumps; **X** runs. **Enter** starts or pauses; **F2** opens s
 
 Every branch push and pull request produces versioned Windows and macOS dev artifacts.
 Push a tag such as `v0.1.0` to publish a GitHub Release with Windows, macOS Intel, and macOS Apple Silicon ZIPs and SHA-256 checksums.
-The **Build desktop apps** workflow also supports manual dev or release builds; releases require a `vX.Y.Z` tag.
+The **Build** workflow also supports manual dev or release builds; releases require a `vX.Y.Z` tag.
 `Version.props` sets the base version for dev builds.
 
 With the .NET 10 SDK installed, package the builder using `./tools/package-builder.ps1`.
