@@ -15,14 +15,15 @@ namespace Smw2Pc.Builder;
 
 internal static class GameBuilder
 {
+    public static string ArtifactName => OperatingSystem.IsWindows() ? "SMW.exe" : "SMW";
+
     public static string LogPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SMW2PC", "build.log");
 
     public static async Task<string> BuildAsync(string romPath, string outputDirectory,
         Action<string>? progress = null, CancellationToken cancellationToken = default)
     {
-        if (!OperatingSystem.IsWindows() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
-            throw new PlatformNotSupportedException("The ROM builder requires 64-bit Windows.");
+        EnsureSupportedPlatform();
         if (!new[] { ".sfc", ".smc" }.Contains(Path.GetExtension(romPath), StringComparer.OrdinalIgnoreCase))
             throw new ArgumentException("Select a Super Mario World .sfc or .smc ROM.", nameof(romPath));
         Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
@@ -83,7 +84,7 @@ internal static class GameBuilder
 
             var readyToRunDirectory = Path.Combine(workspace, "ready-to-run");
             Directory.CreateDirectory(readyToRunDirectory);
-            Log("Precompiling translated game code for Windows x64...");
+            Log($"Precompiling translated game code for {RuntimeIdentifier}...");
             var coreImage = Path.Combine(readyToRunDirectory, "Smw2Pc.Core.dll");
             await CompileReadyToRun(corePath, coreImage, template, workspace, Log, cancellationToken);
             File.Move(coreImage, corePath, overwrite: true);
@@ -91,17 +92,22 @@ internal static class GameBuilder
             await CompileReadyToRun(playerPath, playerImage, template, workspace, Log, cancellationToken);
             File.Move(playerImage, playerPath, overwrite: true);
 
-            Log("Creating portable SMW.exe...");
-            var host = Path.Combine(template, "SMW.exe");
-            HostWriter.CreateAppHost(Path.Combine(workspace, "apphost.exe"), host, "SMW.dll",
-                windowsGraphicalUserInterface: true, assemblyToCopyResourcesFrom: playerPath);
+            Log($"Creating portable {ArtifactName}...");
+            var executableName = OperatingSystem.IsWindows() ? "SMW.exe" : "SMW";
+            var host = Path.Combine(template, executableName);
+            HostWriter.CreateAppHost(Path.Combine(workspace, AppHostName), host, "SMW.dll",
+                windowsGraphicalUserInterface: OperatingSystem.IsWindows(), assemblyToCopyResourcesFrom: playerPath);
             var bundleDirectory = Path.Combine(workspace, "bundle");
             Directory.CreateDirectory(bundleDirectory);
-            var bundler = new Bundler("SMW.exe", bundleDirectory,
-                BundleOptions.BundleAllContent, OSPlatform.Windows, Architecture.X64, new Version(10, 0));
+            var bundler = new Bundler(executableName, bundleDirectory,
+                BundleOptions.BundleAllContent, TargetPlatform, RuntimeInformation.ProcessArchitecture, new Version(10, 0));
             var files = Directory.GetFiles(template, "*", SearchOption.AllDirectories)
                 .Select(path => new FileSpec(path, Path.GetRelativePath(template, path))).ToList();
             var executable = bundler.GenerateBundle(files);
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(executable,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
             cancellationToken.ThrowIfCancellationRequested();
             Log("Checking player dependencies...");
             await RunCheck(executable, ["--verify-native"], Log, cancellationToken);
@@ -110,7 +116,7 @@ internal static class GameBuilder
             cancellationToken.ThrowIfCancellationRequested();
 
             Directory.CreateDirectory(outputDirectory);
-            var destination = Path.Combine(Path.GetFullPath(outputDirectory), "SMW.exe");
+            var destination = Path.Combine(Path.GetFullPath(outputDirectory), ArtifactName);
             replacement = Path.Combine(outputDirectory, $".SMW-{Guid.NewGuid():N}.tmp");
             File.Copy(executable, replacement);
             File.Move(replacement, destination, overwrite: true);
@@ -124,7 +130,13 @@ internal static class GameBuilder
         }
         finally
         {
-            if (replacement is not null) TryDeleteFile(replacement);
+            if (replacement is not null)
+            {
+                TryDeleteFile(replacement);
+                try { if (Directory.Exists(replacement)) Directory.Delete(replacement, recursive: true); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
             try { Directory.Delete(workspace, recursive: true); }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
@@ -132,6 +144,34 @@ internal static class GameBuilder
     }
 
     private static ResourceDescription Resource(string name, string path) => new(name, () => File.OpenRead(path), false);
+
+    private static string RuntimeIdentifier => TargetOs + "-" + TargetArchitectureName;
+
+    private static string TargetArchitectureName => RuntimeInformation.ProcessArchitecture switch
+    {
+        Architecture.X64 => "x64",
+        Architecture.Arm64 => "arm64",
+        _ => throw new PlatformNotSupportedException("The ROM builder supports x64 and ARM64 hosts."),
+    };
+
+    private static string TargetOs => OperatingSystem.IsWindows() ? "win"
+        : OperatingSystem.IsLinux() ? "linux"
+        : throw new PlatformNotSupportedException("The ROM builder supports Windows and Linux.");
+
+    private static string AppHostName => OperatingSystem.IsWindows() ? "apphost.exe" : "apphost";
+
+    private static OSPlatform TargetPlatform => OperatingSystem.IsWindows() ? OSPlatform.Windows
+        : OperatingSystem.IsLinux() ? OSPlatform.Linux
+        : throw new PlatformNotSupportedException("The ROM builder supports Windows and Linux.");
+
+    private static void EnsureSupportedPlatform()
+    {
+        var architecture = RuntimeInformation.ProcessArchitecture;
+        var supported = OperatingSystem.IsWindows() && architecture == Architecture.X64
+            || OperatingSystem.IsLinux() && architecture == Architecture.X64;
+        if (!supported)
+            throw new PlatformNotSupportedException("The ROM builder supports 64-bit Windows and Linux x64.");
+    }
 
     private static void Compile(string name, Version version, IEnumerable<string> sourceFiles, string output,
         IEnumerable<MetadataReference> references, IEnumerable<ResourceDescription> resources,
@@ -161,11 +201,15 @@ internal static class GameBuilder
             [assembly: System.Reflection.AssemblyProduct("SMW2PC")]
             """, parseOptions));
         var compilation = CSharpCompilation.Create(name, trees, references,
-            new CSharpCompilationOptions(application ? OutputKind.WindowsApplication : OutputKind.DynamicallyLinkedLibrary,
+            new CSharpCompilationOptions(application
+                    ? OperatingSystem.IsWindows() ? OutputKind.WindowsApplication : OutputKind.ConsoleApplication
+                    : OutputKind.DynamicallyLinkedLibrary,
                 optimizationLevel: OptimizationLevel.Release, nullableContextOptions: NullableContextOptions.Enable));
         // Release the template DLL before emitting its ROM-specific replacement.
         using var outputStream = File.Create(output);
-        using var win32 = application ? compilation.CreateDefaultWin32Resources(true, false, null, null) : null;
+        using var win32 = application && OperatingSystem.IsWindows()
+            ? compilation.CreateDefaultWin32Resources(true, false, null, null)
+            : null;
         var result = compilation.Emit(outputStream, manifestResources: resources, win32Resources: win32, cancellationToken: cancellationToken);
         if (!result.Success)
             throw new InvalidDataException("Game compilation failed:\n" + string.Join("\n",
@@ -203,9 +247,14 @@ internal static class GameBuilder
     private static async Task CompileReadyToRun(string assemblyPath, string outputPath, string template,
         string workspace, Action<string> log, CancellationToken cancellationToken)
     {
-        var compiler = Path.Combine(workspace, "crossgen2", "crossgen2.exe");
+        var compiler = Path.Combine(workspace, "crossgen2", OperatingSystem.IsWindows() ? "crossgen2.exe" : "crossgen2");
         if (!File.Exists(compiler))
             throw new FileNotFoundException("The bundled .NET ReadyToRun compiler is missing.", compiler);
+        if (!OperatingSystem.IsWindows())
+        {
+            var mode = File.GetUnixFileMode(compiler);
+            File.SetUnixFileMode(compiler, mode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+        }
 
         var start = new ProcessStartInfo(compiler)
         {
@@ -216,9 +265,9 @@ internal static class GameBuilder
             WorkingDirectory = template,
         };
         start.ArgumentList.Add("--targetos");
-        start.ArgumentList.Add("windows");
+        start.ArgumentList.Add(OperatingSystem.IsWindows() ? "windows" : "linux");
         start.ArgumentList.Add("--targetarch");
-        start.ArgumentList.Add("x64");
+        start.ArgumentList.Add(TargetArchitectureName);
         start.ArgumentList.Add("--optimize-time");
         start.ArgumentList.Add($"-r:{Path.Combine(template, "*.dll")}");
         start.ArgumentList.Add("--out");
