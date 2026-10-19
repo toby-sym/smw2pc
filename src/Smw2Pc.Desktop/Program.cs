@@ -13,6 +13,7 @@ internal static class Program
     private const int InstructionsPerFrame = 18000;
     private const int MaximumCatchUpFrames = 5;
     private const int MaximumSoftwarePresentationRate = DesktopSettings.MaximumRenderFrameRate;
+    private const int MaximumVSyncPresentationRate = 90;
     private static readonly long SettingsSaveDelayTicks = Stopwatch.Frequency / 2;
     private static readonly (int Width, int Height)[] ResolutionPresets =
     [
@@ -121,8 +122,7 @@ internal static class Program
         var displayId = SDL.GetDisplayForWindow(window);
         var displayRefreshRate = GetDisplayRefreshRate(displayId);
         var configuredRenderRate = settings.RenderFrameRate;
-        var basePresentationRefreshDivisor = GetPresentationRefreshDivisor(configuredRenderRate, displayRefreshRate);
-        var presentationRefreshDivisor = basePresentationRefreshDivisor;
+        var presentationRefreshDivisor = GetPresentationRefreshDivisor(configuredRenderRate, displayRefreshRate);
         var presentationFrameRate = GetPresentationFrameRate(configuredRenderRate, displayRefreshRate, presentationRefreshDivisor);
         var verticalSyncEnabled = TrySetPresentationVSync(
             renderer,
@@ -175,9 +175,6 @@ internal static class Program
         GameAction? rebindingAction = null;
         var settingsSavePending = false;
         var settingsSaveTimestamp = 0L;
-        var consecutiveOverBudgetFrames = 0;
-        var consecutiveUnderBudgetFrames = 0;
-        var smoothedFrameWorkTicks = 0L;
         var smoothedRenderToPresentTicks = 0L;
 
         using (var compiledRomStream = typeof(Program).Assembly.GetManifestResourceStream(CompiledRomResourceName))
@@ -193,9 +190,6 @@ internal static class Program
                     cpuRunner = new NativeCpuRunner(memoryBus);
                     memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
                     frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
-                    consecutiveOverBudgetFrames = 0;
-                    consecutiveUnderBudgetFrames = 0;
-                    smoothedFrameWorkTicks = 0;
                     smoothedRenderToPresentTicks = 0;
                     previousTimestamp = Stopwatch.GetTimestamp();
                     nextPresentationTimestamp = previousTimestamp;
@@ -227,8 +221,7 @@ internal static class Program
                 {
                     displayId = currentDisplayId;
                     displayRefreshRate = GetDisplayRefreshRate(displayId);
-                    basePresentationRefreshDivisor = GetPresentationRefreshDivisor(settings.RenderFrameRate, displayRefreshRate);
-                    presentationRefreshDivisor = basePresentationRefreshDivisor;
+                    presentationRefreshDivisor = GetPresentationRefreshDivisor(settings.RenderFrameRate, displayRefreshRate);
                     presentationFrameRate = GetPresentationFrameRate(settings.RenderFrameRate, displayRefreshRate, presentationRefreshDivisor);
                     verticalSyncEnabled = TrySetPresentationVSync(
                         renderer,
@@ -236,9 +229,6 @@ internal static class Program
                         presentationRefreshDivisor,
                         presentationFrameRate);
                     configuredRenderRate = settings.RenderFrameRate;
-                    consecutiveOverBudgetFrames = 0;
-                    consecutiveUnderBudgetFrames = 0;
-                    smoothedFrameWorkTicks = 0;
                     smoothedRenderToPresentTicks = 0;
                     nextPresentationTimestamp = currentTimestamp;
                 }
@@ -248,8 +238,7 @@ internal static class Program
                     if (Math.Abs(currentRefreshRate - displayRefreshRate) > 0.01)
                     {
                         displayRefreshRate = currentRefreshRate;
-                        basePresentationRefreshDivisor = GetPresentationRefreshDivisor(settings.RenderFrameRate, displayRefreshRate);
-                        presentationRefreshDivisor = basePresentationRefreshDivisor;
+                        presentationRefreshDivisor = GetPresentationRefreshDivisor(settings.RenderFrameRate, displayRefreshRate);
                         presentationFrameRate = GetPresentationFrameRate(settings.RenderFrameRate, displayRefreshRate, presentationRefreshDivisor);
                         verticalSyncEnabled = TrySetPresentationVSync(
                             renderer,
@@ -257,9 +246,6 @@ internal static class Program
                             presentationRefreshDivisor,
                             presentationFrameRate);
                         configuredRenderRate = settings.RenderFrameRate;
-                        consecutiveOverBudgetFrames = 0;
-                        consecutiveUnderBudgetFrames = 0;
-                        smoothedFrameWorkTicks = 0;
                         smoothedRenderToPresentTicks = 0;
                         nextPresentationTimestamp = currentTimestamp;
                     }
@@ -409,9 +395,6 @@ internal static class Program
                     }
 
                     frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
-                    consecutiveOverBudgetFrames = 0;
-                    consecutiveUnderBudgetFrames = 0;
-                    smoothedFrameWorkTicks = 0;
                     previousTimestamp = Stopwatch.GetTimestamp();
                     nextPresentationTimestamp = previousTimestamp;
                     elapsedSeconds = 0;
@@ -438,25 +421,19 @@ internal static class Program
             if (settings.RenderFrameRate != configuredRenderRate)
             {
                 configuredRenderRate = settings.RenderFrameRate;
-                basePresentationRefreshDivisor = GetPresentationRefreshDivisor(configuredRenderRate, displayRefreshRate);
-                presentationRefreshDivisor = basePresentationRefreshDivisor;
+                presentationRefreshDivisor = GetPresentationRefreshDivisor(configuredRenderRate, displayRefreshRate);
                 presentationFrameRate = GetPresentationFrameRate(configuredRenderRate, displayRefreshRate, presentationRefreshDivisor);
                 verticalSyncEnabled = TrySetPresentationVSync(
                     renderer,
                     displayRefreshRate,
                     presentationRefreshDivisor,
                     presentationFrameRate);
-                consecutiveOverBudgetFrames = 0;
-                consecutiveUnderBudgetFrames = 0;
-                smoothedFrameWorkTicks = 0;
                 smoothedRenderToPresentTicks = 0;
                 nextPresentationTimestamp = presentationTimestamp;
             }
 
             var renderIntervalTicks = Math.Max(1, (long)Math.Round(Stopwatch.Frequency / presentationFrameRate));
             var renderRequested = presentationTimestamp >= nextPresentationTimestamp;
-            var presentedFrameWorkTicks = 0L;
-            var presentedFrameWorkStart = renderRequested ? Stopwatch.GetTimestamp() : 0L;
             var presentedFrameRendererStart = 0L;
 
             if (cpuRunner is not null)
@@ -564,19 +541,7 @@ internal static class Program
                         verticalSyncEnabled);
                 }
 
-                if (presentedFrameWorkStart != 0)
-                {
-                    // RenderPresent may wait for a VSync interval. Keep that scanout wait
-                    // out of the workload estimate used to choose a presentation rate.
-                    presentedFrameWorkTicks = Stopwatch.GetTimestamp() - presentedFrameWorkStart;
-                }
                 SDL.RenderPresent(renderer);
-                if (presentedFrameWorkTicks != 0)
-                {
-                    smoothedFrameWorkTicks = smoothedFrameWorkTicks == 0
-                        ? presentedFrameWorkTicks
-                        : smoothedFrameWorkTicks + ((presentedFrameWorkTicks - smoothedFrameWorkTicks) / 16);
-                }
 
                 var presentedTimestamp = Stopwatch.GetTimestamp();
                 if (presentedFrameRendererStart != 0)
@@ -585,72 +550,6 @@ internal static class Program
                     smoothedRenderToPresentTicks = smoothedRenderToPresentTicks == 0
                         ? rendererToPresentTicks
                         : smoothedRenderToPresentTicks + ((rendererToPresentTicks - smoothedRenderToPresentTicks) / 8);
-                }
-
-                var targetIntervalTicks = renderIntervalTicks;
-                if (cpuRunner is not null && displayRefreshRate > 0)
-                {
-                    if (smoothedFrameWorkTicks > targetIntervalTicks * 0.90)
-                    {
-                        consecutiveOverBudgetFrames++;
-                        consecutiveUnderBudgetFrames = 0;
-                    }
-                    else
-                    {
-                        consecutiveOverBudgetFrames = 0;
-                        // Smooth occasional OS/driver spikes and require meaningful headroom
-                        // before climbing back up. Consecutive raw-frame checks could never
-                        // recover on a workload with intermittent slow frames.
-                        if (smoothedFrameWorkTicks < targetIntervalTicks * 0.60)
-                        {
-                            consecutiveUnderBudgetFrames++;
-                        }
-                        else
-                        {
-                            consecutiveUnderBudgetFrames = 0;
-                        }
-                    }
-
-                    if (consecutiveOverBudgetFrames >= 30)
-                    {
-                        var slowerRefreshDivisor = Math.Max(
-                            basePresentationRefreshDivisor,
-                            presentationRefreshDivisor + 1);
-                        var slowerPresentationFrameRate = GetPresentationFrameRate(
-                            configuredRenderRate,
-                            displayRefreshRate,
-                            slowerRefreshDivisor);
-                        if (slowerPresentationFrameRate < presentationFrameRate - 0.01)
-                        {
-                            presentationRefreshDivisor = slowerRefreshDivisor;
-                            presentationFrameRate = slowerPresentationFrameRate;
-                            verticalSyncEnabled = TrySetPresentationVSync(
-                                renderer,
-                                displayRefreshRate,
-                                presentationRefreshDivisor,
-                                presentationFrameRate);
-                            nextPresentationTimestamp = presentedTimestamp;
-                        }
-
-                        consecutiveOverBudgetFrames = 0;
-                        consecutiveUnderBudgetFrames = 0;
-                    }
-                    else if (consecutiveUnderBudgetFrames >= 180
-                        && presentationRefreshDivisor > basePresentationRefreshDivisor)
-                    {
-                        presentationRefreshDivisor--;
-                        presentationFrameRate = GetPresentationFrameRate(
-                            configuredRenderRate,
-                            displayRefreshRate,
-                            presentationRefreshDivisor);
-                        verticalSyncEnabled = TrySetPresentationVSync(
-                            renderer,
-                            displayRefreshRate,
-                            presentationRefreshDivisor,
-                            presentationFrameRate);
-                        consecutiveUnderBudgetFrames = 0;
-                        nextPresentationTimestamp = presentedTimestamp;
-                    }
                 }
 
                 var updatedRenderIntervalTicks = Math.Max(1, (long)Math.Round(Stopwatch.Frequency / presentationFrameRate));
@@ -764,6 +663,15 @@ internal static class Program
             || displayRefreshRate <= 0
             || refreshDivisor <= 0
             || !double.IsFinite(presentationFrameRate))
+        {
+            SDL.SetRenderVSync(renderer, 0);
+            return false;
+        }
+
+        // At high refresh rates, a missed VSync deadline can hold presentation to
+        // the next scanout and cut the effective rate in half. Use the precise
+        // software pacer above 90 FPS so a single missed scanout does not become a cap.
+        if (presentationFrameRate > MaximumVSyncPresentationRate)
         {
             SDL.SetRenderVSync(renderer, 0);
             return false;
@@ -1168,7 +1076,7 @@ internal static class Program
             var systemStatus = !string.IsNullOrWhiteSpace(audioError)
                 ? audioError
                 : !verticalSyncEnabled
-                    ? "Vertical sync is unavailable on this display."
+                    ? "Vertical sync is off; software frame pacing is active."
                     : statusMessage.StartsWith("Execution stopped", StringComparison.Ordinal)
                         || statusMessage.StartsWith("Could not", StringComparison.Ordinal)
                             ? statusMessage
