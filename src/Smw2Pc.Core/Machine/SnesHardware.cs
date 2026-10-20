@@ -66,6 +66,7 @@ public sealed class SnesHardware
     private bool hasPreviousObjectAttributeFrame;
     private bool nmiFlag;
     private bool nmiRequested;
+    private bool timerIrqFlag;
 
     public SnesHardware(bool palRegion = false)
     {
@@ -108,6 +109,46 @@ public sealed class SnesHardware
     public ReadOnlyMemory<byte> PpuRegisters => ppuRegisters;
 
     public ushort FixedColor => (ushort)(fixedRed | (fixedGreen << 5) | (fixedBlue << 10));
+
+    internal bool IrqRequested => timerIrqFlag;
+
+    internal int LimitInstructionsToTimerIrq(int maximumInstructions)
+    {
+        var nextIrq = GetNextTimerIrqPosition();
+        return nextIrq == int.MaxValue
+            ? maximumInstructions
+            : Math.Min(maximumInstructions, nextIrq - frameInstructionPosition);
+    }
+
+    private int GetNextTimerIrqPosition()
+    {
+        var mode = cpuRegisters[0] & 0x30;
+        if (mode == 0) return int.MaxValue;
+
+        // Match H/V timers on the existing instruction-based raster clock. The
+        // timer registers count dots/scanlines, independently of CPU I masking.
+        var horizontal = (mode & 0x10) != 0
+            ? cpuRegisters[7] | ((cpuRegisters[8] & 1) << 8)
+            : 0;
+        if (horizontal > 340) return int.MaxValue;
+
+        var vertical = (mode & 0x20) != 0
+            ? cpuRegisters[9] | ((cpuRegisters[10] & 1) << 8)
+            : currentScanline;
+        if (vertical >= scanlinesPerFrame) return int.MaxValue;
+
+        var position = TimerInstructionPosition(vertical, horizontal);
+        if (position > frameInstructionPosition) return position;
+        if ((mode & 0x20) != 0 || ++vertical >= scanlinesPerFrame) return int.MaxValue;
+        return TimerInstructionPosition(vertical, horizontal);
+    }
+
+    private int TimerInstructionPosition(int vertical, int horizontal)
+    {
+        var dotsPerFrame = scanlinesPerFrame * 341;
+        return (int)(((long)(vertical * 341 + horizontal) * InstructionsPerFrame
+            + dotsPerFrame - 1) / dotsPerFrame);
+    }
 
     public ReadOnlyMemory<byte> GetPpuRegistersForScanline(int scanline)
     {
@@ -199,9 +240,10 @@ public sealed class SnesHardware
             }
 
             var nextScanlineBoundary = (int)(((long)(currentScanline + 1) * InstructionsPerFrame + scanlinesPerFrame - 1) / scanlinesPerFrame);
-            var nextBoundary = Math.Min(
+            var nextTimerIrq = GetNextTimerIrqPosition();
+            var nextBoundary = Math.Min(nextTimerIrq, Math.Min(
                 inVBlank ? InstructionsPerFrame : vBlankStartInstruction,
-                nextScanlineBoundary);
+                nextScanlineBoundary));
             var untilBoundary = nextBoundary - frameInstructionPosition;
             var advance = Math.Min(instructionsRemaining, untilBoundary);
             frameInstructionPosition += advance;
@@ -209,6 +251,11 @@ public sealed class SnesHardware
 
             if (frameInstructionPosition == nextBoundary)
             {
+                if (frameInstructionPosition == nextTimerIrq)
+                {
+                    timerIrqFlag = true;
+                }
+
                 if (frameInstructionPosition == nextScanlineBoundary)
                 {
                     if (!inVBlank)
@@ -262,6 +309,14 @@ public sealed class SnesHardware
 
         hdmaFrameStarted = true;
         currentScanline = 0;
+        var timerMode = cpuRegisters[0] & 0x30;
+        if (timerMode != 0
+            && ((timerMode & 0x10) == 0 || (cpuRegisters[7] | ((cpuRegisters[8] & 1) << 8)) == 0)
+            && ((timerMode & 0x20) == 0 || (cpuRegisters[9] | ((cpuRegisters[10] & 1) << 8)) == 0))
+        {
+            timerIrqFlag = true;
+        }
+
         var enabledChannels = cpuRegisters[0x0C];
         for (var channel = 0; channel < 8; channel++)
         {
@@ -481,6 +536,13 @@ public sealed class SnesHardware
             return true;
         }
 
+        if (address == 0x4211)
+        {
+            value = (byte)((openBus & 0x7F) | (timerIrqFlag ? 0x80 : 0));
+            timerIrqFlag = false;
+            return true;
+        }
+
         if (address == 0x4212)
         {
             var horizontalPosition = (frameInstructionPosition * scanlinesPerFrame) % InstructionsPerFrame;
@@ -573,10 +635,25 @@ public sealed class SnesHardware
 
         if (address is >= 0x4200 and <= 0x420D)
         {
+            var previousTimerMode = cpuRegisters[0] & 0x30;
             cpuRegisters[address - 0x4200] = value;
-            if (address == 0x4200 && nmiFlag && (value & 0x80) != 0)
+            if (address == 0x4200)
             {
-                nmiRequested = true;
+                if (nmiFlag && (value & 0x80) != 0)
+                {
+                    nmiRequested = true;
+                }
+
+                var timerMode = value & 0x30;
+                if (timerMode == 0)
+                {
+                    timerIrqFlag = false;
+                }
+                else if (timerMode == 0x20 && previousTimerMode != timerMode
+                    && currentScanline == (cpuRegisters[9] | ((cpuRegisters[10] & 1) << 8)))
+                {
+                    timerIrqFlag = true;
+                }
             }
 
             if (address == 0x4203)
