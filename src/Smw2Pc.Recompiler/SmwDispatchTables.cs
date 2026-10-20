@@ -1,3 +1,4 @@
+using Smw2Pc.Core.Cpu;
 using Smw2Pc.Core.Rom;
 
 namespace Smw2Pc.Recompiler;
@@ -58,4 +59,34 @@ internal sealed class SmwDispatchTables
 
     public int PointerWidth(uint canonicalTarget) => widths.GetValueOrDefault(canonicalTarget);
     public int RecognizedHelpers => widths.Count;
+
+    public bool TryGetTailDispatchTable(DecodedCpuBlock block, uint canonicalTarget, out uint table, out int width)
+    {
+        table = 0;
+        width = 0;
+        if (block.Instructions.Count < 3) return false;
+
+        var transfer = block.Instructions[^1];
+        var relativePointer = block.Instructions[^2];
+        var bankPush = block.Instructions[^3];
+        width = PointerWidth(canonicalTarget);
+        if (transfer.Operation != CpuOperation.JumpLong || width == 0
+            || relativePointer.Operation != CpuOperation.PushEffectiveRelative
+            || bankPush.Operation != CpuOperation.PushProgramBank)
+        {
+            width = 0;
+            return false;
+        }
+
+        var bank = block.StartAddress & 0xFF0000;
+        var pushedReturnAddress = unchecked((ushort)(relativePointer.NextProgramCounter + (short)relativePointer.Operand));
+        // SMW's tail-call form pushes tableStart - 1, then jumps to ExecutePtr.
+        table = bank | unchecked((ushort)(pushedReturnAddress + 1));
+        var afterTransfer = bank | transfer.NextProgramCounter;
+        if (table == afterTransfer) return true;
+
+        table = 0;
+        width = 0;
+        return false;
+    }
 }

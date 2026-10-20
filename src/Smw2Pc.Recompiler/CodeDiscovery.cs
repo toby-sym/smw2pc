@@ -90,7 +90,12 @@ internal sealed class CodeDiscovery(SnesRom rom)
                 case CpuOperation.ReturnFromInterrupt:
                     break;
                 case CpuOperation.JumpAbsolute: Next(bank | (ushort)last.Operand); break;
-                case CpuOperation.JumpLong: Next(last.Operand); break;
+                case CpuOperation.JumpLong:
+                    Next(last.Operand);
+                    if (dispatchers.TryGetTailDispatchTable(block, bus.CanonicalCodeAddress(last.Operand),
+                            out var tailTable, out var tailWidth))
+                        ExpandTable(tailTable, tailWidth, mode, emulation);
+                    break;
                 case CpuOperation.CallAbsolute:
                     Next(bank | (ushort)last.Operand); Next(next); break;
                 case CpuOperation.CallLong:
