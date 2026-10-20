@@ -44,6 +44,7 @@ public sealed class NativeCpuRunner
     {
         ArgumentOutOfRangeException.ThrowIfNegative(instructionBudget);
 
+        MemoryBus.Widescreen.PrepareFrame();
         var instructionsExecuted = 0;
         while (instructionsExecuted < instructionBudget && !State.Halted)
         {
