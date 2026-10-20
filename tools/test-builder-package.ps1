@@ -39,6 +39,14 @@ try {
     }
     $game = Join-Path $testDirectory "SMW.exe"
     if (-not (Test-Path -LiteralPath $game)) { throw "The builder did not create SMW.exe beside itself." }
+    $reportPath = Join-Path $testDirectory "SMW-compatibility.json"
+    if (-not (Test-Path -LiteralPath (Join-Path $testDirectory "SMW-compatibility.html"))) {
+        throw "The builder did not export its compatibility report."
+    }
+    $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+    if ($report.BuildStatus -notlike 'Passed*' -or $report.AddressCoverage.Count -eq 0) {
+        throw "The compatibility report is missing verification status or discovered code coverage."
+    }
     $verified = Start-Process -FilePath $game -ArgumentList "--verify-native" -WindowStyle Hidden -Wait -PassThru
     if ($verified.ExitCode -ne 0) { throw "The generated SMW.exe failed its native dependency check." }
     $gameHash = (Get-FileHash -LiteralPath $game -Algorithm SHA256).Hash

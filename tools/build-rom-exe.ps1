@@ -63,6 +63,7 @@ $executableName = if ($RuntimeIdentifier.StartsWith("win-")) { "SMW.exe" } else 
 $executablePath = Join-Path $outputPath $executableName
 Copy-Item -LiteralPath (Join-Path $generatedDirectory "manifest.json") -Destination (Join-Path $outputPath "manifest.json")
 Copy-Item -LiteralPath (Join-Path $generatedDirectory "proof.json") -Destination (Join-Path $outputPath "proof.json")
+Copy-Item -LiteralPath (Join-Path $generatedDirectory "compatibility.html") -Destination (Join-Path $outputPath "compatibility.html")
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "THIRD-PARTY-NOTICES.md") -Destination $outputPath
 
 if (-not $SkipVerification) {
