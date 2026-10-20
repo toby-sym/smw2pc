@@ -15,6 +15,12 @@ internal static class HomebrewRom
         void Store(byte value, ushort address) => Emit(0xA9, value, 0x8D, (byte)address, (byte)(address >> 8));
         void Wait(byte value, ushort address) => Emit(0xAD, (byte)address, (byte)(address >> 8), 0xC9, value, 0xD0, 0xF9);
         void Echo() => Emit(0xCD, 0x40, 0x21, 0xD0, 0xFB);
+        void Dma(byte mode, byte port, ushort source, ushort length)
+        {
+            Store(mode, 0x4300); Store(port, 0x4301);
+            Store((byte)source, 0x4302); Store((byte)(source >> 8), 0x4303); Store(0, 0x4304);
+            Store((byte)length, 0x4305); Store((byte)(length >> 8), 0x4306); Store(1, 0x420B);
+        }
 
         // Upload an original noise instrument through the SPC700 boot protocol.
         var audio = new List<byte>();
@@ -31,14 +37,45 @@ internal static class HomebrewRom
         }
         Store(0, 0x2141); Store(0, 0x2142); Store(2, 0x2143);
         Store((byte)(audio.Count + 1), 0x2140); Echo();
+        Store(0x80, 0x2115); // DMA original tiles and a repeating terrain/bush tilemap.
+        Store(0, 0x2116); Store(0x10, 0x2117); Dma(1, 0x18, 0xC000, 64);
+        Store(0, 0x2116); Store(0, 0x2117); Dma(1, 0x18, 0xC100, 2048);
+        Store(0, 0x2121); Dma(0, 0x22, 0xCC00, 32);
+        Store(128, 0x2121); Dma(0, 0x22, 0xCC20, 32);
+        Store(0, 0x2102); Store(0, 0x2103); Dma(0, 4, 0xC900, 544);
+        Store(1, 0x2105); Store(0, 0x2107); Store(1, 0x210B); Store(0x11, 0x212C);
         Store(0x0F, 0x2100);
         var loop = code.Count;
         Emit(0xE6, 0x10, 0xAD, 0x19, 0x42, 0x85, 0x11,
             0x8F, 0x00, 0x00, 0x70, 0x8D, 0x0D, 0x21,
+            0xA9, 0, 0x8D, 0x0D, 0x21,
             0x9C, 0x21, 0x21, 0xA5, 0x10, 0x8D, 0x22, 0x21,
             0xA9, 0, 0x8D, 0x22, 0x21);
+        Store(0, 0x2102); Store(0, 0x2103);
+        Emit(0xA5, 0x10, 0x8D, 0x04, 0x21);
+        Store(96, 0x2104); Store(1, 0x2104); Store(0x31, 0x2104);
         Emit(0x80, unchecked((byte)(loop - code.Count - 2)));
         code.ToArray().CopyTo(bytes, 0);
+        for (var tile = 0; tile < 2; tile++)
+            for (var y = 0; y < 8; y++)
+                for (var x = 0; x < 8; x++)
+                {
+                    var color = tile == 0 ? (y < 3 ? 1 : 3)
+                        : (x - 3.5) * (x - 3.5) + (y - 3.5) * (y - 3.5) < 15 ? 1 + (x + y) % 2 : 0;
+                    for (var plane = 0; plane < 4; plane++)
+                        if ((color & (1 << plane)) != 0)
+                            bytes[0x4000 + tile * 32 + y * 2 + plane % 2 + plane / 2 * 16] |= (byte)(0x80 >> x);
+                }
+        for (var y = 0; y < 32; y++)
+            for (var x = 0; x < 32; x++) bytes[0x4100 + (y * 32 + x) * 2] = (byte)((x + y) % 2);
+        for (var sprite = 0; sprite < 128; sprite++) bytes[0x4900 + sprite * 4 + 1] = 240;
+        ushort[] colors = [0x7E80, 0x03E0, 0x0200, 0x0155];
+        ushort[] spriteColors = [0, 0x001F, 0x02BF, 0x7FFF];
+        for (var i = 0; i < 4; i++)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0x4C00 + i * 2), colors[i]);
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0x4C20 + i * 2), spriteColors[i]);
+        }
         Encoding.ASCII.GetBytes("SMW2PC HOMEBREW TEST  ").CopyTo(bytes, 0x7FC0);
         bytes[0x7FD5] = 0x20;
         bytes[0x7FD8] = saveExponent;
