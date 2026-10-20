@@ -66,6 +66,28 @@ public sealed class PlayerSaveTests
     }
 
     [TestMethod]
+    public async Task BackgroundBatteryWriteUsesAnImmutableCopyAndKeepsLaterChangesDirty()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smw2pc-async-save-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var rom = HomebrewGame.Create();
+            var bus = new SnesMemoryBus(rom);
+            var store = new GameSaveStore(rom, root);
+            store.LoadBattery(bus);
+            bus.WriteByte(0x700000, 0x42);
+            var pending = store.SaveBatteryAsync(bus);
+            bus.WriteByte(0x700000, 0x77);
+            Assert.IsTrue(await pending);
+            Assert.AreEqual((byte)0x42, File.ReadAllBytes(store.SavePath)[0]);
+            Assert.IsTrue(await store.SaveBatteryAsync(bus));
+            Assert.AreEqual((byte)0x77, File.ReadAllBytes(store.SavePath)[0]);
+            Assert.IsFalse(await store.SaveBatteryAsync(bus));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     public void BatteryAndQuickSaveRecoverFromBackupAndStayIsolatedByRom()
     {
         var root = Path.Combine(Path.GetTempPath(), "smw2pc-save-test-" + Guid.NewGuid().ToString("N"));

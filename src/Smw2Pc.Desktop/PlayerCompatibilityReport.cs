@@ -26,9 +26,15 @@ internal static class PlayerCompatibilityReport
             CpuAddress = runner is null ? null : $"{runner.State.ProgramBank:X2}:{runner.State.ProgramCounter:X4}",
             Cpu = runner is null ? null : new
             {
-                runner.State.Accumulator, runner.State.X, runner.State.Y,
-                runner.State.StackPointer, runner.State.DirectPage, runner.State.Status,
-                runner.State.EmulationMode, runner.State.Halted, runner.State.WaitingForInterrupt,
+                runner.State.Accumulator,
+                runner.State.X,
+                runner.State.Y,
+                runner.State.StackPointer,
+                runner.State.DirectPage,
+                runner.State.Status,
+                runner.State.EmulationMode,
+                runner.State.Halted,
+                runner.State.WaitingForInterrupt,
             },
         }, new JsonSerializerOptions { WriteIndented = true }));
         return path;

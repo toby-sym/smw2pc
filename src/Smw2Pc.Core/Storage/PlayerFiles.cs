@@ -42,7 +42,8 @@ public static class PlayerFiles
             var bytes = File.ReadAllBytes(path + ".bak");
             var value = read(bytes);
             // Repair the primary only after validating the backup.
-            WriteAtomic(path, bytes, backup: false);
+            try { WriteAtomic(path, bytes, backup: false); }
+            catch (Exception repairError) when (repairError is IOException or UnauthorizedAccessException) { }
             return value;
         }
     }

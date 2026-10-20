@@ -6,14 +6,18 @@ internal static partial class Program
 
     private static SDL.FRect PlayerRow(SDL.FRect panel, int index) => new()
     {
-        X = panel.X + 12, Y = panel.Y + 100 + index * Math.Min(44, (panel.H - 164) / 8),
-        W = panel.W - 24, H = Math.Min(36, (panel.H - 164) / 8 - 4),
+        X = panel.X + 12,
+        Y = panel.Y + 100 + index * Math.Min(44, (panel.H - 164) / 8),
+        W = panel.W - 24,
+        H = Math.Min(36, (panel.H - 164) / 8 - 4),
     };
 
     private static SDL.FRect GetPlayerTabButton(SDL.FRect panel) => new()
     {
-        X = panel.X + 20 + 2 * ((panel.W - 32) / 3), Y = panel.Y + 52,
-        W = (panel.W - 32) / 3, H = 30,
+        X = panel.X + 20 + 2 * ((panel.W - 32) / 3),
+        Y = panel.Y + 52,
+        W = (panel.W - 32) / 3,
+        H = 30,
     };
 
     private static bool HandlePlayerClick(float x, float y, SDL.FRect panel,

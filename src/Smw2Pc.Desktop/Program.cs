@@ -251,9 +251,21 @@ internal static partial class Program
         var appliedFullscreen = false;
         var appliedGain = -1f;
         var nextBatterySaveTimestamp = 0L;
+        Task<bool>? batterySaveTask = null;
+        var settingsSaveTask = Task.CompletedTask;
+
+        void CompleteBatteryWrite()
+        {
+            if (batterySaveTask is null) return;
+            try { batterySaveTask.GetAwaiter().GetResult(); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            { statusMessage = $"Could not save progress: {exception.Message}"; }
+            batterySaveTask = null;
+        }
 
         void PersistBattery()
         {
+            CompleteBatteryWrite();
             if (cpuRunner is null || saveStore is null) return;
             try { saveStore.SaveBattery(cpuRunner.MemoryBus); }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -281,6 +293,7 @@ internal static partial class Program
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
             { warning = $" | Could not load progress: {exception.Message}"; }
             PersistBattery();
+            settingsSaveTask.GetAwaiter().GetResult();
             settings.Save();
             settings = DesktopSettings.Load(rom.Sha256);
             loadedRom = rom;
@@ -619,6 +632,7 @@ internal static partial class Program
                     }
                     else if (pendingPlayerCommand == PlayerCommand.LoadState)
                     {
+                        CompleteBatteryWrite();
                         cpuRunner = saveStore.LoadState();
                         keyboardButtons = gamepadButtons = controllerButtons = SnesControllerButtons.None;
                         cpuRunner.MemoryBus.Hardware.SetControllerButtons(0, controllerButtons);
@@ -667,9 +681,11 @@ internal static partial class Program
                 }
                 wasPaused = gamePaused;
             }
-            if (Stopwatch.GetTimestamp() >= nextBatterySaveTimestamp)
+            if (batterySaveTask?.IsCompleted == true) CompleteBatteryWrite();
+            if (batterySaveTask is null && Stopwatch.GetTimestamp() >= nextBatterySaveTimestamp)
             {
-                PersistBattery();
+                if (cpuRunner is not null && saveStore is not null)
+                    batterySaveTask = saveStore.SaveBatteryAsync(cpuRunner.MemoryBus);
                 nextBatterySaveTimestamp = Stopwatch.GetTimestamp() + Stopwatch.Frequency * 2;
             }
 
@@ -1020,9 +1036,10 @@ internal static partial class Program
             }
 
             var timestampAfterPresent = Stopwatch.GetTimestamp();
-            if (settingsSavePending && timestampAfterPresent - settingsSaveTimestamp >= SettingsSaveDelayTicks)
+            if (settingsSavePending && settingsSaveTask.IsCompleted
+                && timestampAfterPresent - settingsSaveTimestamp >= SettingsSaveDelayTicks)
             {
-                settings.Save();
+                settingsSaveTask = settings.SaveAsync();
                 settingsSavePending = false;
             }
 
@@ -1034,6 +1051,7 @@ internal static partial class Program
         }
 
         PersistBattery();
+        settingsSaveTask.GetAwaiter().GetResult();
         settings.Save();
 
         if (audioStream != IntPtr.Zero)

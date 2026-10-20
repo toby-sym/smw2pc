@@ -20,11 +20,23 @@ public sealed class GameSaveStore(SnesRom rom, string? root = null)
     }
 
     public bool SaveBattery(SnesMemoryBus bus)
+        => SaveBatteryAsync(bus).GetAwaiter().GetResult();
+
+    // Capture on the game thread; only the immutable copy is used by the disk worker.
+    // Callers await any outstanding write before replacing or restoring the machine.
+    public Task<bool> SaveBatteryAsync(SnesMemoryBus bus)
     {
         ValidateRom(bus);
-        if (bus.SaveRam.Length == 0 || bus.SaveRamRevision == savedRevision) return false;
-        PlayerFiles.WriteAtomic(SavePath, bus.SaveRam.Span);
-        savedRevision = bus.SaveRamRevision;
+        if (bus.SaveRam.Length == 0 || bus.SaveRamRevision == savedRevision) return Task.FromResult(false);
+        var bytes = bus.SaveRam.ToArray();
+        var revision = bus.SaveRamRevision;
+        return WriteBatteryAsync(bytes, revision);
+    }
+
+    private async Task<bool> WriteBatteryAsync(byte[] bytes, long revision)
+    {
+        await Task.Run(() => PlayerFiles.WriteAtomic(SavePath, bytes)).ConfigureAwait(false);
+        savedRevision = revision;
         return true;
     }
 

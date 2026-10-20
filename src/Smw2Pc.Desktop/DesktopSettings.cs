@@ -151,16 +151,20 @@ internal sealed class DesktopSettings
     }
 
     public void Save()
+        => SaveAsync().GetAwaiter().GetResult();
+
+    public Task SaveAsync()
     {
-        try
+        var path = settingsPath;
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(this, new JsonSerializerOptions { WriteIndented = true });
+        return Task.Run(() =>
         {
-            PlayerFiles.WriteAtomic(settingsPath, JsonSerializer.SerializeToUtf8Bytes(this,
-                new JsonSerializerOptions { WriteIndented = true }));
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // Settings are optional; a write failure should not interrupt gameplay.
-        }
+            try { PlayerFiles.WriteAtomic(path, bytes); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Settings are optional; a write failure should not interrupt gameplay.
+            }
+        });
     }
 
     public static int ClampRenderFrameRate(int frameRate)
