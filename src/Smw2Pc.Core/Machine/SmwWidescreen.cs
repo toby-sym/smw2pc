@@ -8,6 +8,7 @@ public sealed class SmwWidescreen
     private readonly SnesMemoryBus bus;
     private readonly byte[]? extendedData;
     private readonly Dictionary<uint, (uint Original, uint Extended)> graphicsOperands = [];
+    private readonly int pipeAppearanceTable;
     private bool enabled;
 
     internal SmwWidescreen(SnesMemoryBus bus)
@@ -37,6 +38,10 @@ public sealed class SmwWidescreen
             graphicsOperands[(uint)(start + 32)] = (0x40, 0x40 + ExtraVisibility);
             graphicsOperands[(uint)(start + 35)] = (0x180, 0x180 + ExtraVisibility * 2);
         }
+        ReadOnlySpan<byte> pipeAppearances = [0xB0, 0x8A, 0xE0, 0x84, 0xF0, 0x8A, 0x30, 0x8B];
+        pipeAppearanceTable = Matches(data, 0x058776, pipeAppearances) ? Offset(0x058776)
+            : Matches(data, 0x05879B, pipeAppearances) ? Offset(0x05879B) : 0;
+        if (pipeAppearanceTable == 0) return;
         IsSupported = true;
         extendedData = data.ToArray();
         ExtendBounds(first, 8);
@@ -59,10 +64,16 @@ public sealed class SmwWidescreen
     // Vertical levels, bosses, overworld maps and scripted scenes retain their
     // authored framing. Horizontal interactive layer 2 needs a separate map layout.
     public bool CanExtendLevel => enabled && IsSupported
-        && bus.Hardware.ReadWorkRam(0x100) == 0x14
+        && IsLevelPresentation(bus.Hardware.ReadWorkRam(0x100), bus.Hardware.ReadWorkRam(0xD9B))
         && (bus.Hardware.ReadWorkRam(0x5B) & 0xC1) == 0
         && bus.Hardware.ReadWorkRam(0x1931) < 0x10
         && bus.Hardware.ReadWorkRam(0x5D) > 1;
+
+    internal static bool IsLevelPresentation(byte mode, byte irqCommand)
+        // Preparation draws the initial sprites; fade-in must already use the final
+        // viewport. Keep that viewport until an outgoing level has faded to black.
+        => mode is >= 0x12 and <= 0x14
+            || (irqCommand == 0 && mode is 0x0B or 0x15 or 0x18);
 
     internal void PrepareFrame() => bus.SetPresentationRomData(CanExtendLevel ? extendedData! : bus.Rom.Data);
 
@@ -112,6 +123,14 @@ public sealed class SmwWidescreen
         var tile = ram[0xC800 + index] | (ram[0x1C800 + index] << 8);
         if (tile >= 512) return -1;
         var pointer = BinaryPrimitives.ReadUInt16LittleEndian(ram[(0xFBE + tile * 2)..]);
+        if (tile is >= 0x133 and <= 0x13A)
+        {
+            // SMW rewrites these eight temporary pointers for the strip it is
+            // uploading. A different world column may use another pipe palette.
+            var screen = (worldX >> 8) & 3;
+            pointer = (ushort)(BinaryPrimitives.ReadUInt16LittleEndian(
+                bus.Rom.Data.Span[(pipeAppearanceTable + screen * 2)..]) + (tile - 0x133) * 8);
+        }
         if (pointer < 0x8000 || pointer > 0xFFF8) return -1;
         var quadrant = ((worldY & 8) != 0 ? 2 : 0) + ((worldX & 8) != 0 ? 4 : 0);
         return BinaryPrimitives.ReadUInt16LittleEndian(bus.Rom.Data.Span[(Offset(0x0D0000 | pointer) + quadrant)..]);

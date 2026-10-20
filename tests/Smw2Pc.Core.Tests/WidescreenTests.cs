@@ -9,6 +9,47 @@ namespace Smw2Pc.Core.Tests;
 public sealed class WidescreenTests
 {
     [TestMethod]
+    public void OffscreenPipeColoursDependOnWorldColumnAndNotTheUploadScratchPointers()
+    {
+        var bus = new SnesMemoryBus(SmwLayoutFixture.Create());
+        Assert.IsTrue(bus.Widescreen.IsSupported);
+        bus.WriteByte(0x7E005D, 4);
+        for (var screen = 0; screen < 4; screen++)
+            for (var pipe = 0; pipe < 8; pipe++)
+            {
+                var y = (pipe + 1) * 16;
+                var index = screen * 0x1B0 + (y >> 4) * 16;
+                bus.WriteByte((uint)(0x7EC800 + index), (byte)(0x33 + pipe));
+                bus.WriteByte((uint)(0x7FC800 + index), 1);
+                // Simulate the streaming routine preparing several unrelated columns.
+                foreach (var scratch in new[] { 0x9000, 0x8AB0, 0x84E0, 0x8AF0, 0x8B30 })
+                {
+                    var pointerAddress = (uint)(0x7E0FBE + (0x133 + pipe) * 2);
+                    bus.WriteByte(pointerAddress, (byte)scratch);
+                    bus.WriteByte(pointerAddress + 1, (byte)(scratch >> 8));
+                    for (var quadrant = 0; quadrant < 4; quadrant++)
+                        Assert.AreEqual((int)SmwLayoutFixture.Entry(screen, pipe, quadrant),
+                            bus.Widescreen.ReadForegroundEntry(screen * 256 + (quadrant >= 2 ? 8 : 0),
+                                y + ((quadrant & 1) != 0 ? 8 : 0)));
+                }
+            }
+    }
+
+    [TestMethod]
+    [DataRow(0x12, 0, true)]
+    [DataRow(0x13, 0, true)]
+    [DataRow(0x14, 0, true)]
+    [DataRow(0x0B, 0, true)]
+    [DataRow(0x15, 0, true)]
+    [DataRow(0x18, 0, true)]
+    [DataRow(0x0B, 1, false)]
+    [DataRow(0x0E, 0, false)]
+    [DataRow(0x0F, 0, false)]
+    [DataRow(0x11, 0, false)]
+    public void LevelFramingIncludesItsFadeButNotOverworldOrTitleTransitions(int mode, int irqCommand, bool expected)
+        => Assert.AreEqual(expected, SmwWidescreen.IsLevelPresentation((byte)mode, (byte)irqCommand));
+
+    [TestMethod]
     public void StatusBarFramingFollowsTheRasterSplitAfterLineThirtySix()
     {
         var bus = new SnesMemoryBus(HomebrewGame.Create());

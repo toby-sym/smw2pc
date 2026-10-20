@@ -13,13 +13,15 @@ Mario or crop the top and bottom. The status bar stays centered at its original 
 Stock SMW horizontal levels with ordinary layer 1 terrain are extended. The view
 clamps at level boundaries. The added terrain comes from the complete live Map16 map; it does
 not expose stale columns from the original scrolling VRAM ring. The central
-viewport retains the original VRAM sampling and dynamic-block timing. Tile animation,
+viewport retains the original VRAM sampling and dynamic-block timing. Pipe colours
+come from the pipe's world column, independently of the latest uploaded strip. Tile animation,
 palettes, priorities, color math, windows, and sprite interpolation still apply.
 
 Sprite spawning, despawning, and the three shared sprite drawing routines use
 wider horizontal bounds. This is an opt-in gameplay visibility change: enemies can
 become active earlier. The simulation rate, physics constants, audio clock, and
-presentation cap are unchanged. A newly enabled view may need camera movement to
+presentation cap are unchanged. The extended view is active during level preparation
+and fade-in, and stays in place through the outgoing level fade. A newly enabled view may need camera movement to
 populate sprites beyond the old spawn boundary; enter a level with 16:9 enabled
 for a consistent initial population.
 
