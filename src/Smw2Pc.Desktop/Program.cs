@@ -12,6 +12,12 @@ internal static class Program
     private const string CompiledRomResourceName = "Smw2Pc.Desktop.CompiledRom";
     private const int InstructionsPerFrame = 18000;
     private const int MaximumCatchUpFrames = 5;
+    private const int AudioSampleRateHz = 32_000;
+    private const int AudioBytesPerSampleFrame = sizeof(short) * 2;
+    private const int AudioStartupBufferSampleFrames = AudioSampleRateHz / 100;
+    private const double AudioTargetQueueSeconds = 0.020;
+    private const double AudioQueueSmoothingSeconds = 0.250;
+    private const double MaximumAudioClockAdjustment = 0.005;
     private const int MaximumSoftwarePresentationRate = DesktopSettings.MaximumRenderFrameRate;
     private const int MaximumVSyncPresentationRate = 90;
     private const int PresentationIntervalSampleCount = 180;
@@ -163,13 +169,15 @@ internal static class Program
         var nextDisplayModeCheck = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
         var audioError = string.Empty;
         var audioStream = IntPtr.Zero;
+        var audioStreamPaused = false;
+        var smoothedAudioQueueSeconds = AudioTargetQueueSeconds;
         if (SDL.InitSubSystem(SDL.InitFlags.Audio))
         {
             var audioSpec = new SDL.AudioSpec
             {
                 Format = SDL.AudioFormat.AudioS16LE,
                 Channels = 2,
-                Freq = 32_000,
+                Freq = AudioSampleRateHz,
             };
             audioStream = SDL.OpenAudioDeviceStream(
                 SDL.AudioDeviceDefaultPlayback,
@@ -180,11 +188,11 @@ internal static class Program
             {
                 audioError = $"Audio is disabled: {SDL.GetError()}";
             }
-            else if (!SDL.ResumeAudioStreamDevice(audioStream))
+            else
             {
-                audioError = $"Audio is disabled: {SDL.GetError()}";
-                SDL.DestroyAudioStream(audioStream);
-                audioStream = IntPtr.Zero;
+                // OpenAudioDeviceStream starts paused. Keep it that way until the
+                // first game audio block has been queued, avoiding startup underruns.
+                audioStreamPaused = true;
             }
         }
         else
@@ -500,7 +508,10 @@ internal static class Program
                     memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
                     if (audioStream != IntPtr.Zero)
                     {
+                        SDL.PauseAudioStreamDevice(audioStream);
+                        audioStreamPaused = true;
                         SDL.ClearAudioStream(audioStream);
+                        smoothedAudioQueueSeconds = AudioTargetQueueSeconds;
                     }
 
                     frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
@@ -553,7 +564,65 @@ internal static class Program
                 try
                 {
                     var frameDuration = 1.0 / loadedRom!.Header.FrameRateHz;
+                    if (audioStream != IntPtr.Zero)
+                    {
+                        var queuedBytes = SDL.GetAudioStreamQueued(audioStream);
+                        if (queuedBytes < 0)
+                        {
+                            audioError = $"Audio output stopped: {SDL.GetError()}";
+                            statusMessage = audioError;
+                            SDL.DestroyAudioStream(audioStream);
+                            audioStream = IntPtr.Zero;
+                            audioStreamPaused = false;
+                            frameAccumulator = frameDuration;
+                        }
+                        else
+                        {
+                            // Keep gameplay on the ROM's fixed clock. Let audio follow
+                            // it with a small correction for drift between device clocks.
+                            var playbackRate = GetAudioPlaybackRate(
+                                queuedBytes,
+                                elapsedSeconds,
+                                ref smoothedAudioQueueSeconds);
+                            if (!SDL.SetAudioStreamFrequencyRatio(audioStream, (float)playbackRate))
+                            {
+                                audioError = $"Audio output stopped: {SDL.GetError()}";
+                                statusMessage = audioError;
+                                SDL.DestroyAudioStream(audioStream);
+                                audioStream = IntPtr.Zero;
+                                audioStreamPaused = false;
+                                frameAccumulator = frameDuration;
+                            }
+
+                            if (audioStreamPaused
+                                && audioStream != IntPtr.Zero
+                                && queuedBytes >= AudioStartupBufferSampleFrames * AudioBytesPerSampleFrame)
+                            {
+                                if (SDL.ResumeAudioStreamDevice(audioStream))
+                                {
+                                    audioStreamPaused = false;
+                                }
+                                else
+                                {
+                                    audioError = $"Audio output stopped: {SDL.GetError()}";
+                                    statusMessage = audioError;
+                                    SDL.DestroyAudioStream(audioStream);
+                                    audioStream = IntPtr.Zero;
+                                    audioStreamPaused = false;
+                                    frameAccumulator = frameDuration;
+                                }
+                            }
+                        }
+                    }
+
                     frameAccumulator += elapsedSeconds;
+                    if (frameAccumulator > frameDuration * MaximumCatchUpFrames)
+                    {
+                        // After a long stall, resume from the current audio/video point
+                        // instead of queuing a burst of stale gameplay sound.
+                        frameAccumulator = frameDuration;
+                    }
+
                     var advancedFrames = 0;
                     while (frameAccumulator >= frameDuration && advancedFrames < MaximumCatchUpFrames)
                     {
@@ -572,6 +641,27 @@ internal static class Program
                             statusMessage = audioError;
                             SDL.DestroyAudioStream(audioStream);
                             audioStream = IntPtr.Zero;
+                            audioStreamPaused = false;
+                            frameAccumulator = frameDuration;
+                        }
+                    }
+
+                    if (audioStreamPaused
+                        && audioStream != IntPtr.Zero
+                        && SDL.GetAudioStreamQueued(audioStream) >= AudioStartupBufferSampleFrames * AudioBytesPerSampleFrame)
+                    {
+                        if (SDL.ResumeAudioStreamDevice(audioStream))
+                        {
+                            audioStreamPaused = false;
+                        }
+                        else
+                        {
+                            audioError = $"Audio output stopped: {SDL.GetError()}";
+                            statusMessage = audioError;
+                            SDL.DestroyAudioStream(audioStream);
+                            audioStream = IntPtr.Zero;
+                            audioStreamPaused = false;
+                            frameAccumulator = frameDuration;
                         }
                     }
 
@@ -870,6 +960,23 @@ internal static class Program
     private static double ToMilliseconds(long ticks)
     {
         return ticks * 1_000.0 / Stopwatch.Frequency;
+    }
+
+    private static double GetAudioPlaybackRate(
+        int queuedAudioBytes,
+        double elapsedSeconds,
+        ref double smoothedAudioQueueSeconds)
+    {
+        var queuedSeconds = queuedAudioBytes
+            / (double)(AudioSampleRateHz * AudioBytesPerSampleFrame);
+        var smoothingElapsed = Math.Clamp(elapsedSeconds, 0.0, 0.100);
+        var smoothingAmount = smoothingElapsed / (AudioQueueSmoothingSeconds + smoothingElapsed);
+        smoothedAudioQueueSeconds += (queuedSeconds - smoothedAudioQueueSeconds) * smoothingAmount;
+        var playbackAdjustment = (smoothedAudioQueueSeconds - AudioTargetQueueSeconds) * 0.25;
+        return Math.Clamp(
+            1.0 + playbackAdjustment,
+            1.0 - MaximumAudioClockAdjustment,
+            1.0 + MaximumAudioClockAdjustment);
     }
 
     private static long WaitUntil(long deadlineTimestamp)
