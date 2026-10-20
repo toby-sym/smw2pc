@@ -14,7 +14,7 @@ public static class CpuStatusFlags
     public const byte Carry = 0x01;
 }
 
-public sealed class CpuState
+public sealed partial class CpuState
 {
     public ushort Accumulator;
     public ushort X;

@@ -2,7 +2,7 @@ using Smw2Pc.Core.Rom;
 
 namespace Smw2Pc.Core.Machine;
 
-public sealed class SnesMemoryBus
+public sealed partial class SnesMemoryBus
 {
     private const int LoRomBankSize = 0x8000;
     private const int LoRomBankMask = LoRomBankSize - 1;
@@ -12,6 +12,7 @@ public sealed class SnesMemoryBus
 
     private readonly ReadOnlyMemory<byte> romData;
     private byte openBus = 0xFF;
+    private readonly byte[] saveRam;
 
     public SnesMemoryBus(SnesRom rom)
     {
@@ -26,11 +27,25 @@ public sealed class SnesMemoryBus
         Rom = rom;
         romData = rom.Data;
         Hardware = new SnesHardware(rom.Header.IsPalRegion);
+        saveRam = new byte[rom.Header.SaveRamSize];
+        Array.Fill(saveRam, (byte)0xFF);
     }
 
     public SnesRom Rom { get; }
 
     public SnesHardware Hardware { get; }
+
+    public ReadOnlyMemory<byte> SaveRam => saveRam;
+
+    public long SaveRamRevision { get; private set; }
+
+    public void LoadSaveRam(ReadOnlySpan<byte> data)
+    {
+        if (data.Length != saveRam.Length)
+            throw new InvalidDataException("The save file size does not match this cartridge.");
+        data.CopyTo(saveRam);
+        SaveRamRevision++;
+    }
 
     public byte ReadByte(uint address)
     {
@@ -47,6 +62,9 @@ public sealed class SnesMemoryBus
         {
             return ReadMappedByte(Hardware.ReadWorkRam(offset & 0x1FFF));
         }
+
+        if (TryGetSaveRamOffset(bank, offset, out var saveOffset))
+            return ReadMappedByte(saveRam[saveOffset]);
 
         if (IsSystemBank(bank) && Hardware.TryReadRegister((ushort)offset, openBus, out var registerValue))
         {
@@ -91,6 +109,16 @@ public sealed class SnesMemoryBus
             return;
         }
 
+        if (TryGetSaveRamOffset(bank, offset, out var saveOffset))
+        {
+            if (saveRam[saveOffset] != value)
+            {
+                saveRam[saveOffset] = value;
+                SaveRamRevision++;
+            }
+            return;
+        }
+
         if (IsSystemBank(bank))
         {
             Hardware.TryWriteRegister(this, (ushort)offset, value);
@@ -124,6 +152,16 @@ public sealed class SnesMemoryBus
         var bank = (int)((address >> 16) & 0xFF);
         var low = (int)(address & OffsetMask);
         return IsLowWorkRamMirror(bank, low) ? 0x7E0000u | (uint)low : address & AddressMask;
+    }
+
+    private bool TryGetSaveRamOffset(int bank, int offset, out int saveOffset)
+    {
+        // Standard LoROM SRAM: $70-$7D/$F0-$FF, lower 32 KiB, mirrored to cartridge size.
+        saveOffset = 0;
+        if (saveRam.Length == 0 || offset >= 0x8000
+            || !(bank is >= 0x70 and <= 0x7D or >= 0xF0 and <= 0xFF)) return false;
+        saveOffset = (((bank & 0x0F) << 15) | offset) % saveRam.Length;
+        return true;
     }
 
     private bool TryGetRomOffset(uint address, out int romOffset)

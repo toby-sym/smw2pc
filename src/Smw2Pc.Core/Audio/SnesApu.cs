@@ -1,6 +1,6 @@
 namespace Smw2Pc.Core.Audio;
 
-public sealed class SnesApu
+public sealed partial class SnesApu
 {
     private const int AudioRamSize = 0x10000;
     private const int SpcClockHz = 1_024_000;
@@ -217,7 +217,7 @@ public sealed class SnesApu
         }
     }
 
-    private sealed class Timer(int period)
+    private sealed partial class Timer(int period)
     {
         private int divider;
         private int stage;

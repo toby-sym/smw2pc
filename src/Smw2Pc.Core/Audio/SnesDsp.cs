@@ -1,6 +1,6 @@
 namespace Smw2Pc.Core.Audio;
 
-internal sealed class SnesDsp
+internal sealed partial class SnesDsp
 {
     private const int VoiceCount = 8;
     private const int VoiceRegisterStride = 0x10;
@@ -347,7 +347,7 @@ internal sealed class SnesDsp
 
     private static int Clamp16(int value) => Math.Clamp(value, short.MinValue, short.MaxValue);
 
-    private sealed class Voice
+    private sealed partial class Voice
     {
         public readonly int[] DecodedSamples = new int[BrrSamplesPerBlock];
         public int BrrAddress;
