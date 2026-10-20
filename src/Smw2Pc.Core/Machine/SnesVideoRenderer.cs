@@ -236,10 +236,6 @@ public static partial class SnesVideoRenderer
         {
             DrawModeSevenLayers(hardware, hardwareScanline, registers, screenEnable, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
         }
-        else if (mode == 0)
-        {
-            DrawModeZeroLayers(hardware, registers, screenEnable, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
-        }
         else if (mode == 1)
         {
             DrawModeOneLayers(hardware, registers, screenEnable, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
@@ -663,39 +659,6 @@ public static partial class SnesVideoRenderer
         }
     }
 
-    private static void DrawModeZeroLayers(
-        SnesHardware hardware,
-        ReadOnlySpan<byte> registers,
-        byte screenEnable,
-        int screenY,
-        bool subScreen,
-        int brightness,
-        Span<byte> rgbaPixels,
-        Span<byte> pixelSources,
-        Span<ushort> pixelColors,
-        ReadOnlySpan<byte> videoRam,
-        ReadOnlySpan<byte> colorRam,
-        float interpolationProgress)
-    {
-        var hardwareScanline = screenY + 1;
-
-        // Mode 0 interleaves BG3/BG4 with the low-priority OBJ pass and BG1/BG2.
-        // Drawing each layer once in numeric order lets BG1 erase water or other
-        // BG3 pixels even when the tilemap marks BG3 as foreground.
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 3, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress, mode: 0);
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 2, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress, mode: 0);
-        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 3, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress, mode: 0);
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 2, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress, mode: 0);
-        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 1, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress, mode: 0);
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 0, priority: 0, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress, mode: 0);
-        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 2, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 1, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress, mode: 0);
-        DrawBackgroundIfEnabled(hardware, registers, hardwareScanline, screenEnable, 0, priority: 1, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress, mode: 0);
-        DrawObjectsIfEnabled(hardware, registers, screenEnable, priority: 3, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
-    }
-
     private static void DrawModeSevenLayers(
         SnesHardware hardware,
         int hardwareScanline,
@@ -837,15 +800,14 @@ public static partial class SnesVideoRenderer
         Span<ushort> pixelColors,
         ReadOnlySpan<byte> videoRam,
         ReadOnlySpan<byte> colorRam,
-        float interpolationProgress,
-        int mode = 1)
+        float interpolationProgress)
     {
         if ((screenEnable & (1 << background)) == 0)
         {
             return;
         }
 
-        DrawBackground(hardware, registers, hardwareScanline, background, mode, priority, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
+        DrawBackground(hardware, registers, hardwareScanline, background, mode: 1, priority, screenY, subScreen, brightness, rgbaPixels, pixelSources, pixelColors, videoRam, colorRam, interpolationProgress);
     }
 
     private static void DrawObjectsIfEnabled(
