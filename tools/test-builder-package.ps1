@@ -10,7 +10,9 @@ New-Item -ItemType Directory -Force -Path $testDirectory | Out-Null
 Expand-Archive -LiteralPath $Archive -DestinationPath $testDirectory
 $builder = Join-Path $testDirectory "SMW2PC.exe"
 if ((Get-Item -LiteralPath $builder).VersionInfo.ProductVersion.Split('+')[0] -ne $Version) { throw "Packaged executable version does not match the artifact." }
-if (Get-ChildItem -LiteralPath $testDirectory -Recurse -File | Where-Object { $_.Extension -in @('.sfc', '.smc') }) { throw "A ROM was included in the distribution." }
+if (Get-ChildItem -LiteralPath $testDirectory -Recurse -File | Where-Object {
+    $_.Extension -in @('.sfc', '.smc', '.bmp') -or $_.Name -match '(?i)homebrew|GameplayChecks|PlayerUiChecks'
+}) { throw "A ROM or development test artifact was included in the distribution." }
 
 # A generated infinite loop exercises compilation and bundling without game assets.
 $rom = New-Object byte[] 0x8000

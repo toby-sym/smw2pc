@@ -6,6 +6,9 @@ on:
       ref:
         type: string
         required: true
+      upload_gameplay_artifacts:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -54,7 +57,7 @@ jobs:
         shell: pwsh
         run: ./tools/test-player-ui.ps1
       - name: Upload gameplay results
-        if: always()
+        if: ${{ always() && inputs.upload_gameplay_artifacts }}
         uses: actions/upload-artifact@v6
         with:
           name: homebrew-gameplay-${{ matrix.os }}

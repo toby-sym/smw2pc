@@ -65,6 +65,9 @@ The test ROM uploads its original audio program through the SPC700 boot protocol
 uses controller input, SRAM, scrolling and color registers. Commercial ROMs and assets
 are not used by this check. CI runs it on Windows, Linux and macOS; this checks the
 managed compiled gameplay path, while platform packaging stays in its platform branch.
+Homebrew captures and test results are uploaded only for dev builds. Release checks
+still run, but homebrew fixtures, test tools and captures are excluded from release
+packages and GitHub Releases.
 
 On Windows, `./tools/test-player-ui.ps1` additionally exercises the SDL player with
 dummy video/audio devices, isolated saves, actual key/mouse events and panel captures.

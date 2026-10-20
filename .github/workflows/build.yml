@@ -59,6 +59,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.prepare.outputs.ref }}
+      upload_gameplay_artifacts: ${{ needs.prepare.outputs.channel == 'dev' }}
 
   package:
     name: Windows x64 builder
