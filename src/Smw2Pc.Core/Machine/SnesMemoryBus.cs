@@ -11,6 +11,7 @@ public sealed partial class SnesMemoryBus
     private const int OffsetMask = 0xFFFF;
 
     private readonly ReadOnlyMemory<byte> romData;
+    private ReadOnlyMemory<byte> presentationRomData;
     private byte openBus = 0xFF;
     private readonly byte[] saveRam;
 
@@ -26,10 +27,17 @@ public sealed partial class SnesMemoryBus
 
         Rom = rom;
         romData = rom.Data;
+        presentationRomData = romData;
         Hardware = new SnesHardware(rom.Header.IsPalRegion);
         saveRam = new byte[rom.Header.SaveRamSize];
         Array.Fill(saveRam, (byte)0xFF);
+        Widescreen = new SmwWidescreen(this);
+        Hardware.Widescreen = Widescreen;
     }
+
+    public SmwWidescreen Widescreen { get; }
+
+    internal void SetPresentationRomData(ReadOnlyMemory<byte> data) => presentationRomData = data;
 
     public SnesRom Rom { get; }
 
@@ -73,7 +81,7 @@ public sealed partial class SnesMemoryBus
 
         if (TryGetRomOffset(address, out var romOffset))
         {
-            return ReadMappedByte(romData.Span[romOffset]);
+            return ReadMappedByte(presentationRomData.Span[romOffset]);
         }
 
         return openBus;

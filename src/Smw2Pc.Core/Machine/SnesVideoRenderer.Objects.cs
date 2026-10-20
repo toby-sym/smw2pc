@@ -19,6 +19,9 @@ public static partial class SnesVideoRenderer
 
         public void Prepare(SnesHardware hardware, float interpolationProgress)
         {
+            var width = activeViewport.Width;
+            var originX = activeViewport.OriginX;
+            var wrapAt = width > Width ? 384 : 256;
             var current = hardware.CurrentFrameObjectAttributeMemory.Span;
             var previous = hardware.PreviousObjectAttributeMemory.Span;
             var interpolate = hardware.HasPreviousObjectAttributeFrame && interpolationProgress < 1f;
@@ -28,7 +31,7 @@ public static partial class SnesVideoRenderer
                 var highShift = (index & 3) * 2;
                 var high = (current[512 + (index >> 2)] >> highShift) & 3;
                 var rawX = current[address] | ((high & 1) << 8);
-                var x = (float)(rawX >= 256 ? rawX - 512 : rawX);
+                var x = (float)rawX;
                 var y = (float)current[address + 1];
                 var attributes = current[address + 3];
                 if (interpolate)
@@ -39,10 +42,12 @@ public static partial class SnesVideoRenderer
                     if (sameObject)
                     {
                         var previousRawX = previous[address] | ((previousHigh & 1) << 8);
-                        var previousX = previousRawX >= 256 ? previousRawX - 512 : previousRawX;
-                        var deltaX = x - previousX;
+                        // Interpolate on the nine-bit circle before selecting the
+                        // viewport's signed representation. Crossing x=256 must not
+                        // look like a 512px teleport in the original viewport.
+                        var deltaX = ((rawX - previousRawX + 256) & 511) - 256;
                         if (Math.Abs(deltaX) <= MaximumInterpolatedObjectDelta)
-                            x = previousX + (deltaX * interpolationProgress);
+                            x -= deltaX * (1f - interpolationProgress);
                         var previousY = previous[address + 1];
                         var deltaY = (int)y - previousY;
                         if (deltaY > 128) deltaY -= 256;
@@ -54,8 +59,10 @@ public static partial class SnesVideoRenderer
 
                 // Positions are snapped once. Every sample then has full coverage and
                 // can use an integer palette lookup without the old bilinear machinery.
+                var roundedX = (int)MathF.Round(x, MidpointRounding.AwayFromZero) & 511;
+                if (roundedX >= wrapAt) roundedX -= 512;
                 Objects[index] = new PreparedObject(
-                    (int)MathF.Round(x, MidpointRounding.AwayFromZero),
+                    roundedX - originX,
                     (int)MathF.Round(y, MidpointRounding.AwayFromZero),
                     current[address + 2], attributes, (high & 2) != 0);
             }
@@ -71,7 +78,7 @@ public static partial class SnesVideoRenderer
                 {
                     var obj = Objects[index];
                     var size = obj.Large ? largeSize : smallSize;
-                    if (obj.X >= Width || obj.X + size <= 0)
+                    if (obj.X >= width || obj.X + size <= 0)
                         continue;
                     var sourceY = ObjectSourceY(y, obj.Y, size);
                     if ((uint)sourceY >= size)
@@ -117,6 +124,7 @@ public static partial class SnesVideoRenderer
         ReadOnlySpan<byte> colorRam,
         float interpolationProgress)
     {
+        var width = activeViewport.Width;
         var cache = activeObjectCache!;
         var hasActiveWindow = HasActiveLayerWindow(registers, 4, subScreen);
         var tileBase = (registers[1] & 7) * 0x4000;
@@ -134,7 +142,7 @@ public static partial class SnesVideoRenderer
             var objectTileBase = tileBase + ((obj.Attributes & 1) != 0 ? tileNameSelectOffset : 0);
             var tileRow = obj.Tile + ((sourceY >> 3) * 16);
             var firstX = Math.Max(0, obj.X);
-            var lastX = Math.Min(Width, obj.X + size);
+            var lastX = Math.Min(width, obj.X + size);
             for (var screenX = firstX; screenX < lastX; screenX++)
             {
                 if (hasActiveWindow && IsLayerWindowed(registers, 4, subScreen, screenX)) continue;
@@ -145,7 +153,7 @@ public static partial class SnesVideoRenderer
                 var colorIndex = ReadTilePixel(videoRam, tileAddress, 4, sourceX & 7, sourceY & 7);
                 if (colorIndex == 0) continue;
                 var color = ReadColorValue(colorRam, paletteBase + colorIndex);
-                var pixel = targetScanline * Width + screenX;
+                var pixel = targetScanline * width + screenX;
                 WriteColor(rgbaPixels, pixel * BytesPerPixel, ReadColor(color, brightness, forcedBlank: false));
                 pixelColors[pixel] = color;
                 pixelSources[pixel] = palette >= 4 ? (byte)5 : (byte)6;

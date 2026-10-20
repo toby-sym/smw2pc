@@ -1,13 +1,18 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Smw2Pc.Core.Cpu;
 using Smw2Pc.Core.Machine;
 
 namespace Smw2Pc.Core.Recompilation;
 
 public sealed record ReplayInput(int Frame, SnesControllerButtons Buttons, SnesControllerButtons PlayerTwo = SnesControllerButtons.None);
-public sealed record ReplayScript(int FormatVersion, string RomSha256, int Frames, int CheckpointEvery, List<ReplayInput> Inputs);
+public sealed record ReplayScript(int FormatVersion, string RomSha256, int Frames, int CheckpointEvery, List<ReplayInput> Inputs)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Widescreen { get; init; }
+}
 public sealed record ReplayCheckpoint(int Frame, string StateSha256, string VideoSha256, string AudioSha256, long AudioSampleFrames);
 public sealed record ReplayResult(int FormatVersion, string RomSha256, string ScriptSha256, int Frames, List<ReplayCheckpoint> Checkpoints);
 
@@ -24,7 +29,9 @@ public static class GameplayReplay
             throw new InvalidDataException("The replay baseline belongs to a different ROM or input script.");
         var checkpoints = new List<ReplayCheckpoint>();
         using var audioHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        var pixels = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
+        runner.MemoryBus.Widescreen.Enabled = script.Widescreen;
+        var viewport = script.Widescreen ? VideoViewport.Widescreen : VideoViewport.Original;
+        var pixels = new byte[viewport.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
         long sampleFrames = 0;
         var nextInput = 0;
         for (var frame = 0; frame < script.Frames; frame++)
@@ -41,7 +48,7 @@ public static class GameplayReplay
             audioHash.AppendData(MemoryMarshal.AsBytes(samples.AsSpan()));
             sampleFrames += samples.Length / 2;
             if ((frame + 1) % script.CheckpointEvery != 0 && frame + 1 != script.Frames) continue;
-            SnesVideoRenderer.RenderFrame(runner.MemoryBus.Hardware, pixels, 1f);
+            SnesVideoRenderer.RenderFrame(runner.MemoryBus.Hardware, pixels, 1f, viewport);
             var checkpoint = new ReplayCheckpoint(frame + 1, ProofPlayback.Capture(runner, frame + 1).StateSha256,
                 Convert.ToHexString(SHA256.HashData(pixels)), Convert.ToHexString(audioHash.GetCurrentHash()), sampleFrames);
             var index = checkpoints.Count;

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Smw2Pc.Core.Recompilation;
 using Smw2Pc.Core.Rom;
+using Smw2Pc.Core.Machine;
 
 namespace Smw2Pc.Recompiler;
 
@@ -11,12 +12,14 @@ public static class RomCompilation
         string[]? profiles = null, Action<string>? log = null, CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(frames, 1);
-        profiles ??= ["attract", "play", "exercise"];
-        if (profiles.Length == 0 || profiles.Any(p => p is not ("attract" or "play" or "exercise")))
-            throw new ArgumentException("Profiles must be attract, play or exercise.", nameof(profiles));
+        var rom = SnesRom.Load(romPath);
+        profiles ??= new SnesMemoryBus(rom).Widescreen.IsSupported
+            ? ["attract", "play", "exercise", "wide-play", "wide-exercise"]
+            : ["attract", "play", "exercise"];
+        if (profiles.Length == 0 || profiles.Any(p => p is not ("attract" or "play" or "exercise" or "wide-play" or "wide-exercise")))
+            throw new ArgumentException("Profiles must be attract, play, exercise, wide-play or wide-exercise.", nameof(profiles));
 
         var watch = Stopwatch.StartNew();
-        var rom = SnesRom.Load(romPath);
         var directory = Path.GetFullPath(outputDirectory);
         var discovery = new CodeDiscovery(rom);
         var recorder = new ProfileRecorder(discovery);

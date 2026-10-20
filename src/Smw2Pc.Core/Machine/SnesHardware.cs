@@ -88,6 +88,8 @@ public sealed partial class SnesHardware
         }
     }
 
+    internal SmwWidescreen? Widescreen { get; set; }
+
     public SnesApu Apu { get; }
 
     public ReadOnlyMemory<byte> WorkRam => workRam;

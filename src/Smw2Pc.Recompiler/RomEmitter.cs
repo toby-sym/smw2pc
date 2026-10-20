@@ -99,11 +99,16 @@ internal static class RomEmitter
                 for (var instructionIndex = 0; instructionIndex < block.Instructions.Count; instructionIndex++)
                     source.AppendLine($"case {instructionIndex}: goto I{instructionIndex};");
                 source.AppendLine("default: throw new ArgumentOutOfRangeException(nameof(startIndex)); }");
+                var instructionAddress = block.StartAddress;
                 for (var instructionIndex = 0; instructionIndex < block.Instructions.Count; instructionIndex++)
                 {
                     var instruction = block.Instructions[instructionIndex];
                     source.AppendLine($"I{instructionIndex}:");
-                    source.AppendLine($"CpuInstructionExecutor.{OperationLowerer.MethodName(instruction, block.StatusMode, block.EmulationMode)}(state, memoryBus, 0x{instruction.Operand:X}u, 0x{instruction.NextProgramCounter:X4});");
+                    var operand = bus.Widescreen.TryGetGraphicsOperand(instructionAddress, instruction.Operand, out var extended)
+                        ? $"memoryBus.Widescreen.GraphicsOperand(0x{instruction.Operand:X}u, 0x{extended:X}u)"
+                        : $"0x{instruction.Operand:X}u";
+                    source.AppendLine($"CpuInstructionExecutor.{OperationLowerer.MethodName(instruction, block.StatusMode, block.EmulationMode)}(state, memoryBus, {operand}, 0x{instruction.NextProgramCounter:X4});");
+                    instructionAddress = (block.StartAddress & 0xFF0000) | instruction.NextProgramCounter;
                     var sequential = !NativeBlockTranslator.EndsBlock(instruction.Operation)
                         || instruction.Operation is CpuOperation.ResetStatusBits or CpuOperation.SetStatusBits
                             or CpuOperation.PullStatus or CpuOperation.ExchangeCarryAndEmulation;

@@ -23,22 +23,43 @@ public static partial class SnesVideoRenderer
     [ThreadStatic]
     private static BackgroundSampleCache? backgroundSampleCache;
 
-    public static void RenderFrame(SnesHardware hardware, Span<byte> rgbaPixels, float interpolationProgress = 0f)
+    [ThreadStatic]
+    private static VideoViewport activeViewport;
+    [ThreadStatic]
+    private static SmwWidescreen? activeWidescreen;
+    [ThreadStatic]
+    private static int activeStatusBarHeight;
+
+    public static void RenderFrame(SnesHardware hardware, Span<byte> rgbaPixels, float interpolationProgress = 0f,
+        VideoViewport? viewport = null)
     {
         ArgumentNullException.ThrowIfNull(hardware);
-        var framePixelCount = Width * Height;
+        var view = viewport ?? VideoViewport.Original;
+        if (view.Width is not (Width or VideoViewport.WidescreenWidth))
+            throw new ArgumentOutOfRangeException(nameof(viewport));
+        var width = view.Width;
+        var framePixelCount = width * Height;
         var frameByteCount = framePixelCount * BytesPerPixel;
         if (rgbaPixels.Length < frameByteCount)
         {
-            throw new ArgumentException("The frame buffer is too small for a 256x224 RGBA frame.", nameof(rgbaPixels));
+            throw new ArgumentException("The frame buffer is too small for the requested RGBA viewport.", nameof(rgbaPixels));
         }
 
+        var previousViewport = activeViewport;
+        var previousWidescreen = activeWidescreen;
+        var previousStatusBarHeight = activeStatusBarHeight;
+        activeViewport = view;
+        activeStatusBarHeight = width > Width && hardware.Widescreen?.IsSuperMarioWorld == true
+            ? GetStatusBarHeight(hardware) : 0;
+        activeWidescreen = width > Width && hardware.Widescreen?.CanExtendLevel == true ? hardware.Widescreen : null;
         interpolationProgress = float.IsFinite(interpolationProgress)
             ? Math.Clamp(interpolationProgress, 0f, 1f)
             : 1f;
         var scrollInterpolationProgress = hardware.HasPreviousPpuFrameScrollOffsets
             ? interpolationProgress
             : 1f;
+        if (activeWidescreen is not null)
+            activeViewport = view = view with { OriginX = activeWidescreen.GetOriginX(view.Width, scrollInterpolationProgress) };
         var videoRam = hardware.VideoRam.Span;
         var colorRam = hardware.ColorRam.Span;
         var backdropColor = ReadColorValue(colorRam, 0);
@@ -65,9 +86,9 @@ public static partial class SnesVideoRenderer
                 var brightness = registers[0] & 0x0F;
                 var forcedBlank = (registers[0] & 0x80) != 0;
                 var backdrop = ReadColor(backdropColor, brightness, forcedBlank);
-                var firstPixel = screenY * Width;
+                var firstPixel = screenY * width;
                 FillScanline(rgbaPixels, screenY, backdrop);
-                pixelColors.Slice(firstPixel, Width).Fill(backdropColor);
+                pixelColors.Slice(firstPixel, width).Fill(backdropColor);
 
                 if (!forcedBlank)
                 {
@@ -115,14 +136,46 @@ public static partial class SnesVideoRenderer
                 }
             }
 
+            if (width > Width && hardware.Widescreen?.IsSuperMarioWorld == true && activeWidescreen is null)
+            {
+                var left = -VideoViewport.Widescreen.OriginX;
+                for (var y = 0; y < Height; y++)
+                {
+                    var row = rgbaPixels.Slice(y * width * BytesPerPixel, width * BytesPerPixel);
+                    MemoryMarshal.Cast<byte, uint>(row[..(left * BytesPerPixel)]).Fill(0xFF000000);
+                    MemoryMarshal.Cast<byte, uint>(row[((left + Width) * BytesPerPixel)..]).Fill(0xFF000000);
+                }
+            }
         }
         finally
         {
+            activeViewport = previousViewport;
+            activeWidescreen = previousWidescreen;
+            activeStatusBarHeight = previousStatusBarHeight;
             activeTileDecodeCache = previousTileDecodeCache;
             activeObjectCache = previousObjectCache;
             ArrayPool<byte>.Shared.Return(pixelSourcesBuffer);
             ArrayPool<ushort>.Shared.Return(pixelColorsBuffer);
         }
+    }
+
+    internal static int GetStatusBarHeight(SnesHardware hardware)
+    {
+        if (hardware.ReadWorkRam(0x1426) != 0) return Height; // Center the message tilemap too.
+        // SMW requests its status-bar IRQ at line 36, then waits for HBlank before
+        // restoring scene registers. Respect the completed frame's actual split.
+        var header = hardware.GetPpuRegistersForScanline(1).Span;
+        var headerOffsets = hardware.GetBackgroundOffsetsForScanline(1).Span;
+        for (var scanline = 37; scanline < 65; scanline++)
+        {
+            var registers = hardware.GetPpuRegistersForScanline(scanline).Span;
+            var offsets = hardware.GetBackgroundOffsetsForScanline(scanline).Span;
+            if (registers[5] != header[5] || registers[0x31] != header[0x31]
+                || offsets[2] != headerOffsets[2] || offsets[6] != headerOffsets[6])
+                return scanline - 1;
+        }
+        // With no layer 3 scene, the same tilemap also holds centered messages.
+        return Height;
     }
 
     private static bool HasModeSevenScanline(SnesHardware hardware)
@@ -145,6 +198,7 @@ public static partial class SnesVideoRenderer
         ReadOnlySpan<byte> pixelSources,
         float interpolationProgress)
     {
+        var width = activeViewport.Width;
         if (interpolationProgress <= 0f)
         {
             return;
@@ -177,9 +231,9 @@ public static partial class SnesVideoRenderer
                 verticalShifts[background] = -vertical * (1f - interpolationProgress);
             }
 
-            for (var screenX = 0; screenX < Width; screenX++)
+            for (var screenX = 0; screenX < width; screenX++)
             {
-                var pixel = (screenY * Width) + screenX;
+                var pixel = (screenY * width) + screenX;
                 var source = pixelSources[pixel];
                 if (source is < 1 or > 4)
                 {
@@ -198,12 +252,12 @@ public static partial class SnesVideoRenderer
                 var sampleY = screenY + shiftY;
                 var samplePixelX = (int)MathF.Round(sampleX, MidpointRounding.AwayFromZero);
                 var samplePixelY = (int)MathF.Round(sampleY, MidpointRounding.AwayFromZero);
-                if ((uint)samplePixelX >= Width || (uint)samplePixelY >= Height)
+                if ((uint)samplePixelX >= width || (uint)samplePixelY >= Height)
                 {
                     continue;
                 }
 
-                var samplePixel = (samplePixelY * Width) + samplePixelX;
+                var samplePixel = (samplePixelY * width) + samplePixelX;
                 if (pixelSources[samplePixel] > 4)
                 {
                     continue;
@@ -283,6 +337,7 @@ public static partial class SnesVideoRenderer
         ReadOnlySpan<byte> colorRam,
         float interpolationProgress)
     {
+        var width = activeViewport.Width;
         var hasColorMathOrMainClip = false;
         var useSubScreen = false;
         for (var scanline = 0; scanline < Height; scanline++)
@@ -314,7 +369,7 @@ public static partial class SnesVideoRenderer
                 subColors = ArrayPool<ushort>.Shared.Rent(mainSources.Length);
                 subSources.AsSpan(0, mainSources.Length).Clear();
                 var backdropColor = ReadColorValue(colorRam, 0);
-                subColors.AsSpan(0, Width * Height).Fill(backdropColor);
+                subColors.AsSpan(0, width * Height).Fill(backdropColor);
 
                 for (var screenY = 0; screenY < Height; screenY++)
                 {
@@ -367,8 +422,8 @@ public static partial class SnesVideoRenderer
                     ? hardware.GetFixedColorForScanline(hardwareScanline)
                     : (ushort)0;
                 var clippedColor = ReadColor(0, brightness, forcedBlank: false);
-                var firstPixel = screenY * Width;
-                for (var x = 0; x < Width; x++)
+                var firstPixel = screenY * width;
+                for (var x = 0; x < width; x++)
                 {
                     var pixel = firstPixel + x;
                     var inColorWindow = needsColorWindow && IsColorWindowPixel(scanlineRegisters, x);
@@ -555,6 +610,13 @@ public static partial class SnesVideoRenderer
 
     private static bool IsWindowPixel(int x, int left, int right, bool inverted)
     {
+        x += activeViewport.OriginX;
+        // The hardware's full-width window also covers the extended sides.
+        if (activeViewport.Width > Width && left <= right)
+        {
+            if (left == 0) left = Math.Min(0, activeViewport.OriginX);
+            if (right == 255) right = Math.Max(255, activeViewport.OriginX + activeViewport.Width - 1);
+        }
         var inside = left <= right && x >= left && x <= right;
         return inverted ? !inside : inside;
     }
@@ -705,6 +767,7 @@ public static partial class SnesVideoRenderer
         ReadOnlySpan<byte> videoRam,
         ReadOnlySpan<byte> colorRam)
     {
+        var width = activeViewport.Width;
         var screenRegister = registers[subScreen ? 0x2D : 0x2C];
         if ((screenRegister & 0x01) == 0)
         {
@@ -732,13 +795,13 @@ public static partial class SnesVideoRenderer
                 + (centerY << 8);
         var repeatMode = (mode7Settings >> 6) & 0x03;
         var horizontalDirection = (mode7Settings & 0x01) != 0 ? -1 : 1;
-        var sourceX = originX + (a * (horizontalDirection < 0 ? 255 : 0));
-        var sourceY = originY + (c * (horizontalDirection < 0 ? 255 : 0));
+        var sourceX = originX + (a * (horizontalDirection < 0 ? 255 - activeViewport.OriginX : activeViewport.OriginX));
+        var sourceY = originY + (c * (horizontalDirection < 0 ? 255 - activeViewport.OriginX : activeViewport.OriginX));
         var horizontalStepX = a * horizontalDirection;
         var horizontalStepY = c * horizontalDirection;
         var hasActiveWindow = HasActiveLayerWindow(registers, 0, subScreen);
 
-        for (var screenX = 0; screenX < Width; screenX++, sourceX += horizontalStepX, sourceY += horizontalStepY)
+        for (var screenX = 0; screenX < width; screenX++, sourceX += horizontalStepX, sourceY += horizontalStepY)
         {
             if (hasActiveWindow && IsLayerWindowed(registers, 0, subScreen, screenX))
             {
@@ -767,7 +830,7 @@ public static partial class SnesVideoRenderer
             }
 
             var colorValue = ReadColorValue(colorRam, colorIndex);
-            var pixelIndex = (screenY * Width) + screenX;
+            var pixelIndex = (screenY * width) + screenX;
             WriteColor(rgbaPixels, pixelIndex * BytesPerPixel, ReadColor(colorValue, brightness, forcedBlank: false));
             pixelColors[pixelIndex] = colorValue;
             pixelSources[pixelIndex] = 1;
@@ -863,6 +926,9 @@ public static partial class SnesVideoRenderer
         ReadOnlySpan<byte> colorRam,
         float interpolationProgress)
     {
+        var width = activeViewport.Width;
+        var hud = background == 2 && screenY < activeStatusBarHeight;
+        var originX = hud ? VideoViewport.Widescreen.OriginX : activeViewport.OriginX;
         var mapRegister = registers[0x07 + background];
         var mapBase = (mapRegister & 0xFC) << 9;
         var mapSize = mapRegister & 0x03;
@@ -906,32 +972,40 @@ public static partial class SnesVideoRenderer
         var cellY = worldY >> tileShift;
         var rowY = worldY & (tileHeight - 1);
         var modeZeroPaletteBase = mode == 0 ? background * 32 : 0;
-        var firstPixel = screenY * Width;
+        var firstPixel = screenY * width;
         var tileCache = activeTileDecodeCache!;
         var sampleCache = backgroundSampleCache ??= new BackgroundSampleCache();
-        var sampleColumns = sampleCache.GetColumns(background, horizontalOffset, pixelWidth, sampleShiftX);
-        var cachedSegment = -1;
+        var levelMap = activeWidescreen is not null && background == 0 && tileWidth == 8;
+        var levelBaseX = levelMap ? activeWidescreen!.GetLevelXOffset(horizontalOffset) - horizontalOffset : 0;
+        var sampleColumns = sampleCache.GetColumns(background, horizontalOffset + originX, pixelWidth, sampleShiftX, !levelMap);
+        var cachedSegment = int.MinValue;
         var drawSegment = false;
         var horizontalFlip = false;
         var paletteBase = 0;
         ReadOnlySpan<byte> tileRow = default;
-        for (var screenX = 0; screenX < Width; screenX++)
+        for (var screenX = 0; screenX < width; screenX++)
         {
             if (hasActiveWindow && IsLayerWindowed(scanlineRegisters, background, subScreen, screenX))
             {
                 continue;
             }
 
+            if (hud && (uint)(screenX + originX) >= Width) continue;
             var worldX = sampleColumns[screenX];
-            var segment = worldX >> 3;
+            // The original viewport retains the live VRAM tile changes, including
+            // bounce-block timing. Only the added sides bypass the streaming ring.
+            var extendedColumn = levelMap && (uint)(screenX + originX) >= Width;
+            var segment = ((worldX >> 3) * 2) + (extendedColumn ? 1 : 0);
             if (segment != cachedSegment)
             {
                 // Map entries, palette selection and tile decoding are shared by
                 // an eight-pixel row. Keep exact per-pixel scroll rounding at its edges.
                 cachedSegment = segment;
-                var mapIndex = GetMapByteIndex(mapBase, mapWidth, worldX >> tileShift, cellY);
-                var entry = videoRam[mapIndex] | (videoRam[mapIndex + 1] << 8);
-                drawSegment = priority < 0 || ((entry >> 13) & 1) == priority;
+                var mapIndex = GetMapByteIndex(mapBase, mapWidth, (worldX & (pixelWidth - 1)) >> tileShift, cellY);
+                var entry = extendedColumn
+                    ? activeWidescreen!.ReadForegroundEntry(levelBaseX + worldX, sampleY)
+                    : videoRam[mapIndex] | (videoRam[mapIndex + 1] << 8);
+                drawSegment = entry >= 0 && (priority < 0 || ((entry >> 13) & 1) == priority);
                 if (drawSegment)
                 {
                     horizontalFlip = (entry & 0x4000) != 0;
@@ -969,18 +1043,20 @@ public static partial class SnesVideoRenderer
 
     private sealed class BackgroundSampleCache
     {
-        private readonly int[] columns = new int[4 * Width];
-        private readonly (int Offset, int PixelWidth, float Shift)[] keys = new (int, int, float)[4];
+        private readonly int[] columns = new int[4 * VideoViewport.WidescreenWidth];
+        private readonly (int Offset, int PixelWidth, float Shift, int Width, bool Wrap)[] keys = new (int, int, float, int, bool)[4];
 
-        public ReadOnlySpan<int> GetColumns(int background, int offset, int pixelWidth, float shift)
+        public ReadOnlySpan<int> GetColumns(int background, int offset, int pixelWidth, float shift, bool wrap)
         {
-            var key = (offset, pixelWidth, shift);
-            var samples = columns.AsSpan(background * Width, Width);
+            var width = activeViewport.Width;
+            var key = (offset, pixelWidth, shift, width, wrap);
+            var samples = columns.AsSpan(background * VideoViewport.WidescreenWidth, width);
             if (keys[background] != key)
             {
-                for (var x = 0; x < Width; x++)
+                for (var x = 0; x < width; x++)
                 {
-                    samples[x] = (int)MathF.Round(x + offset + shift, MidpointRounding.AwayFromZero) & (pixelWidth - 1);
+                    var sample = (int)MathF.Round(x + offset + shift, MidpointRounding.AwayFromZero);
+                    samples[x] = wrap ? sample & (pixelWidth - 1) : sample;
                 }
                 keys[background] = key;
             }
@@ -1119,7 +1195,8 @@ public static partial class SnesVideoRenderer
 
     private static void FillScanline(Span<byte> pixels, int scanline, uint color)
     {
+        var width = activeViewport.Width;
         var nativeColor = BitConverter.IsLittleEndian ? color : BinaryPrimitives.ReverseEndianness(color);
-        MemoryMarshal.Cast<byte, uint>(pixels.Slice(scanline * Width * BytesPerPixel, Width * BytesPerPixel)).Fill(nativeColor);
+        MemoryMarshal.Cast<byte, uint>(pixels.Slice(scanline * width * BytesPerPixel, width * BytesPerPixel)).Fill(nativeColor);
     }
 }

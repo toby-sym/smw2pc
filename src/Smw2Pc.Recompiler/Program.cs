@@ -2,14 +2,14 @@ using Smw2Pc.Recompiler;
 
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("Usage: Smw2Pc.Recompiler <rom> <output-directory> [--frames 3600] [--profiles attract,play,exercise]");
+    Console.Error.WriteLine("Usage: Smw2Pc.Recompiler <rom> <output-directory> [--frames 3600] [--profiles attract,play,exercise,wide-play,wide-exercise]");
     return 2;
 }
 
 try
 {
     var frames = 3600;
-    var profiles = new[] { "attract", "play", "exercise" };
+    string[]? profiles = null;
     for (var i = 2; i < args.Length; i++)
     {
         switch (args[i])
