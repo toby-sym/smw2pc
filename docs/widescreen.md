@@ -1,10 +1,10 @@
 # Extended 16:9 view
 
-Open **F2 ? Display ? Aspect ratio** and select **Extended view (16:9)**.
-A 1920?1080 window fills the screen with more level visible on either side.
+Open **F2 > Display > Aspect ratio** and select **Extended view (16:9)**.
+A 1920x1080 window fills the screen with more level visible on either side.
 Original pixels, Television (4:3), and Stretch remain available.
 
-The extended renderer produces 342?224 pixels, up from 256?224. This retains
+The extended renderer produces 342x224 pixels, up from 256x224. This retains
 approximately the same television pixel proportions at 16:9. It does not stretch
 Mario or crop the top and bottom. The status bar stays centered at its original size.
 

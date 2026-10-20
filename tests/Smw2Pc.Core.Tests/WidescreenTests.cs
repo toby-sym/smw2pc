@@ -50,6 +50,31 @@ public sealed class WidescreenTests
         => Assert.AreEqual(expected, SmwWidescreen.IsLevelPresentation((byte)mode, (byte)irqCommand));
 
     [TestMethod]
+    public void EnteringAndLeavingGameplayDoNotRevealOrRemoveTheWideMargins()
+    {
+        var bus = new SnesMemoryBus(SmwLayoutFixture.Create());
+        bus.WriteByte(0x7E005D, 4);
+        bus.Widescreen.Enabled = true;
+        bus.WriteByte(0x2100, 15);
+        bus.WriteByte(0x2121, 0);
+        bus.WriteByte(0x2122, 0);
+        bus.WriteByte(0x2122, 0x7C); // Blue backdrop, visible across the entire viewport.
+        bus.Hardware.AdvanceCpuInstructions(bus, 18_000);
+        var fading = new byte[342 * 224 * 4];
+        var playing = new byte[fading.Length];
+        bus.WriteByte(0x7E0100, 0x13);
+        SnesVideoRenderer.RenderFrame(bus.Hardware, fading, 1f, VideoViewport.Widescreen);
+        Assert.AreEqual((byte)255, fading[2]);
+        Assert.AreEqual((byte)255, fading[(341 * 4) + 2]);
+        foreach (var mode in new byte[] { 0x14, 0x0B, 0x15 })
+        {
+            bus.WriteByte(0x7E0100, mode);
+            SnesVideoRenderer.RenderFrame(bus.Hardware, playing, 1f, VideoViewport.Widescreen);
+            CollectionAssert.AreEqual(fading, playing, $"The viewport changed at mode ${mode:X2}.");
+        }
+    }
+
+    [TestMethod]
     public void StatusBarFramingFollowsTheRasterSplitAfterLineThirtySix()
     {
         var bus = new SnesMemoryBus(HomebrewGame.Create());
