@@ -51,15 +51,13 @@ public sealed class NativeCpuRunner
             {
                 MemoryBus.Hardware.AdvanceCpuInstructions(MemoryBus, 1);
                 instructionsExecuted++;
-                if (MemoryBus.Hardware.ConsumeNmiRequest())
-                {
-                    EnterNmi();
-                }
+                ServiceInterrupts();
 
                 continue;
             }
 
             var blockSize = Math.Min(MaximumBlockSize, instructionBudget - instructionsExecuted);
+            blockSize = MemoryBus.Hardware.LimitInstructionsToTimerIrq(blockSize);
 #if SMW2PC_RECOMPILED
             var executed = CompiledRomProgram.Execute(State, MemoryBus, blockSize);
             CompiledInstructionsExecuted += executed;
@@ -69,10 +67,7 @@ public sealed class NativeCpuRunner
             var executed = block.InstructionCount;
 #endif
             MemoryBus.Hardware.AdvanceCpuInstructions(MemoryBus, executed);
-            if (MemoryBus.Hardware.ConsumeNmiRequest())
-            {
-                EnterNmi();
-            }
+            ServiceInterrupts();
 
             instructionsExecuted += executed;
         }
@@ -107,7 +102,25 @@ public sealed class NativeCpuRunner
     }
 #endif
 
-    private void EnterNmi()
+    private void ServiceInterrupts()
+    {
+        if (MemoryBus.Hardware.ConsumeNmiRequest())
+        {
+            EnterInterrupt(nmi: true);
+        }
+        else if (MemoryBus.Hardware.IrqRequested)
+        {
+            // WAI resumes on an asserted IRQ even when the CPU I flag prevents
+            // entry into the handler. The hardware flag stays set until acknowledged.
+            State.WaitingForInterrupt = false;
+            if ((State.Status & CpuStatusFlags.InterruptDisable) == 0)
+            {
+                EnterInterrupt(nmi: false);
+            }
+        }
+    }
+
+    private void EnterInterrupt(bool nmi)
     {
         State.WaitingForInterrupt = false;
 
@@ -118,11 +131,13 @@ public sealed class NativeCpuRunner
 
         PushByte((byte)(State.ProgramCounter >> 8));
         PushByte((byte)State.ProgramCounter);
-        PushByte(State.Status);
+        PushByte(State.EmulationMode ? (byte)(State.Status & ~0x10) : State.Status);
         State.Status |= CpuStatusFlags.InterruptDisable;
         State.Status &= unchecked((byte)~CpuStatusFlags.Decimal);
         State.ProgramBank = 0;
-        var vector = State.EmulationMode ? 0xFFFAu : 0xFFEAu;
+        var vector = nmi
+            ? (State.EmulationMode ? 0xFFFAu : 0xFFEAu)
+            : (State.EmulationMode ? 0xFFFEu : 0xFFEEu);
         State.ProgramCounter = MemoryBus.ReadWordInBank(vector);
     }
 
