@@ -28,6 +28,36 @@ public sealed class SnesHardwareTests
     }
 
     [TestMethod]
+    [DataRow(0x00, 1)]
+    [DataRow(0x01, 32)]
+    [DataRow(0x02, 128)]
+    [DataRow(0x80, 1)]
+    [DataRow(0x81, 32)]
+    [DataRow(0x82, 128)]
+    public void PpuVramPortsIgnoreAddressBitFifteenAndWrapAllIncrementModes(int vmain, int increment)
+    {
+        using var romFile = TemporaryRomFile.Create(CreateRomImage());
+        var memoryBus = new SnesMemoryBus(SnesRom.Load(romFile.Path));
+        var incrementOnHighByte = (vmain & 0x80) != 0;
+        memoryBus.WriteByte(0x002115, (byte)vmain);
+
+        SetVideoRamAddress(memoryBus, 0xFFFF);
+        WriteVramWord(memoryBus, 0x34, 0x12, incrementOnHighByte);
+        WriteVramWord(memoryBus, 0x56, 0x78, incrementOnHighByte);
+
+        var videoRam = memoryBus.Hardware.VideoRam.Span;
+        var wrappedWordAddress = increment - 1;
+        Assert.AreEqual((byte)0x34, videoRam[0xFFFE]);
+        Assert.AreEqual((byte)0x12, videoRam[0xFFFF]);
+        Assert.AreEqual((byte)0x56, videoRam[wrappedWordAddress * 2]);
+        Assert.AreEqual((byte)0x78, videoRam[wrappedWordAddress * 2 + 1]);
+
+        SetVideoRamAddress(memoryBus, 0xFFFF);
+        Assert.AreEqual(((byte)0x34, (byte)0x12), ReadVramWord(memoryBus, incrementOnHighByte));
+        Assert.AreEqual(((byte)0x56, (byte)0x78), ReadVramWord(memoryBus, incrementOnHighByte));
+    }
+
+    [TestMethod]
     public void HorizontalScrollWritesPreserveEveryFineScrollBitInBothDirections()
     {
         using var romFile = TemporaryRomFile.Create(CreateRomImage());
@@ -319,6 +349,34 @@ public sealed class SnesHardwareTests
     {
         memoryBus.WriteByte(0x002116, (byte)address);
         memoryBus.WriteByte(0x002117, (byte)(address >> 8));
+    }
+
+    private static void WriteVramWord(SnesMemoryBus memoryBus, byte low, byte high, bool incrementOnHighByte)
+    {
+        if (incrementOnHighByte)
+        {
+            memoryBus.WriteByte(0x002118, low);
+            memoryBus.WriteByte(0x002119, high);
+        }
+        else
+        {
+            memoryBus.WriteByte(0x002119, high);
+            memoryBus.WriteByte(0x002118, low);
+        }
+    }
+
+    private static (byte Low, byte High) ReadVramWord(SnesMemoryBus memoryBus, bool incrementOnHighByte)
+    {
+        if (incrementOnHighByte)
+        {
+            var low = memoryBus.ReadByte(0x002139);
+            var high = memoryBus.ReadByte(0x00213A);
+            return (low, high);
+        }
+
+        var highByte = memoryBus.ReadByte(0x00213A);
+        var lowByte = memoryBus.ReadByte(0x002139);
+        return (lowByte, highByte);
     }
 
     private static void SetWorkRamPortAddress(SnesMemoryBus memoryBus, int address)
