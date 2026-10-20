@@ -9,6 +9,20 @@ namespace Smw2Pc.Core.Tests;
 public sealed class WidescreenTests
 {
     [TestMethod]
+    public void StatusBarFramingFollowsTheRasterSplitAfterLineThirtySix()
+    {
+        var bus = new SnesMemoryBus(HomebrewGame.Create());
+        bus.WriteByte(0x2105, 9);
+        bus.Hardware.AdvanceCpuInstructions(bus, 18_000 * 44 / 262);
+        bus.WriteByte(0x2105, 1);
+        bus.Hardware.AdvanceCpuInstructions(bus, 18_000 - 18_000 * 44 / 262);
+        var split = SnesVideoRenderer.GetStatusBarHeight(bus.Hardware);
+        Assert.IsTrue(split is >= 42 and <= 45, $"HUD ended at {split}, before the delayed IRQ restored the scene.");
+        bus.Hardware.AdvanceCpuInstructions(bus, 18_000);
+        Assert.AreEqual(224, SnesVideoRenderer.GetStatusBarHeight(bus.Hardware));
+    }
+
+    [TestMethod]
     public void UnrecognizedSmwLayoutsRetainTheOriginalFraming()
     {
         var bytes = HomebrewGame.Create().Data.ToArray();

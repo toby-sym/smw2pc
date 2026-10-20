@@ -27,6 +27,8 @@ public static partial class SnesVideoRenderer
     private static VideoViewport activeViewport;
     [ThreadStatic]
     private static SmwWidescreen? activeWidescreen;
+    [ThreadStatic]
+    private static int activeStatusBarHeight;
 
     public static void RenderFrame(SnesHardware hardware, Span<byte> rgbaPixels, float interpolationProgress = 0f,
         VideoViewport? viewport = null)
@@ -45,7 +47,10 @@ public static partial class SnesVideoRenderer
 
         var previousViewport = activeViewport;
         var previousWidescreen = activeWidescreen;
+        var previousStatusBarHeight = activeStatusBarHeight;
         activeViewport = view;
+        activeStatusBarHeight = width > Width && hardware.Widescreen?.IsSuperMarioWorld == true
+            ? GetStatusBarHeight(hardware) : 0;
         activeWidescreen = width > Width && hardware.Widescreen?.CanExtendLevel == true ? hardware.Widescreen : null;
         interpolationProgress = float.IsFinite(interpolationProgress)
             ? Math.Clamp(interpolationProgress, 0f, 1f)
@@ -146,11 +151,31 @@ public static partial class SnesVideoRenderer
         {
             activeViewport = previousViewport;
             activeWidescreen = previousWidescreen;
+            activeStatusBarHeight = previousStatusBarHeight;
             activeTileDecodeCache = previousTileDecodeCache;
             activeObjectCache = previousObjectCache;
             ArrayPool<byte>.Shared.Return(pixelSourcesBuffer);
             ArrayPool<ushort>.Shared.Return(pixelColorsBuffer);
         }
+    }
+
+    internal static int GetStatusBarHeight(SnesHardware hardware)
+    {
+        if (hardware.ReadWorkRam(0x1426) != 0) return Height; // Center the message tilemap too.
+        // SMW requests its status-bar IRQ at line 36, then waits for HBlank before
+        // restoring scene registers. Respect the completed frame's actual split.
+        var header = hardware.GetPpuRegistersForScanline(1).Span;
+        var headerOffsets = hardware.GetBackgroundOffsetsForScanline(1).Span;
+        for (var scanline = 37; scanline < 65; scanline++)
+        {
+            var registers = hardware.GetPpuRegistersForScanline(scanline).Span;
+            var offsets = hardware.GetBackgroundOffsetsForScanline(scanline).Span;
+            if (registers[5] != header[5] || registers[0x31] != header[0x31]
+                || offsets[2] != headerOffsets[2] || offsets[6] != headerOffsets[6])
+                return scanline - 1;
+        }
+        // With no layer 3 scene, the same tilemap also holds centered messages.
+        return Height;
     }
 
     private static bool HasModeSevenScanline(SnesHardware hardware)
@@ -902,7 +927,7 @@ public static partial class SnesVideoRenderer
         float interpolationProgress)
     {
         var width = activeViewport.Width;
-        var hud = hardware.Widescreen?.IsSuperMarioWorld == true && width > Width && background == 2 && screenY < 32;
+        var hud = background == 2 && screenY < activeStatusBarHeight;
         var originX = hud ? VideoViewport.Widescreen.OriginX : activeViewport.OriginX;
         var mapRegister = registers[0x07 + background];
         var mapBase = (mapRegister & 0xFC) << 9;
