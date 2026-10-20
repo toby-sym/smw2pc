@@ -15,6 +15,7 @@ internal static class HeadlessProof
         try
         {
             var verify = args.Contains("--verify");
+            var widescreen = args.Contains("--widescreen");
             if (verify && !NativeCpuRunner.IsRecompiled)
                 throw new InvalidOperationException("Differential verification requires a strict recompiled player.");
             var engine = typeof(NativeCpuRunner).Assembly;
@@ -41,7 +42,7 @@ internal static class HeadlessProof
             {
                 switch (args[i])
                 {
-                    case "--verify": case "--headless": break;
+                    case "--verify": case "--headless": case "--widescreen": break;
                     case "--frames": frames = int.Parse(args[++i]); break;
                     case "--profile": profileName = args[++i]; break;
                     case "--report": report = args[++i]; break;
@@ -68,12 +69,13 @@ internal static class HeadlessProof
             {
                 var script = JsonSerializer.Deserialize<ReplayScript>(File.ReadAllText(replayPath))
                     ?? throw new InvalidDataException("Invalid replay script.");
+                if (widescreen) script = script with { Widescreen = true };
                 var baseline = baselinePath is null ? null
                     : JsonSerializer.Deserialize<ReplayResult>(File.ReadAllText(baselinePath))
                         ?? throw new InvalidDataException("Invalid replay baseline.");
                 var replayRunner = new NativeCpuRunner(new SnesMemoryBus(rom));
                 var outcome = GameplayReplay.Run(replayRunner, script, baseline);
-                if (screenshot is not null) WriteBitmap(screenshot, replayRunner.MemoryBus.Hardware);
+                if (screenshot is not null) WriteBitmap(screenshot, replayRunner.MemoryBus.Hardware, script.Widescreen);
                 if (report is not null)
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(report))!);
@@ -98,6 +100,7 @@ internal static class HeadlessProof
             foreach (var profile in proof.Profiles)
             {
                 var bus = new SnesMemoryBus(rom);
+                bus.Widescreen.Enabled = widescreen || profile.Name.StartsWith("wide-", StringComparison.Ordinal);
                 var runner = new NativeCpuRunner(bus);
                 var checkpoints = profile.Checkpoints.ToDictionary(c => c.Frame);
                 using var audioHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -118,7 +121,7 @@ internal static class HeadlessProof
                     if (runner.State.Halted) throw new InvalidOperationException($"CPU halted at frame {frame + 1}.");
                 }
                 final ??= ProofPlayback.Capture(runner, profile.Frames, Convert.ToHexString(audioHash.GetCurrentHash()));
-                if (screenshot is not null) WriteBitmap(screenshot, bus.Hardware);
+                if (screenshot is not null) WriteBitmap(screenshot, bus.Hardware, bus.Widescreen.Enabled);
                 Console.WriteLine($"{profile.Name}: {profile.Frames} frames, {checkpoints.Count} matching checkpoints, game mode ${final.GameMode:X2}, {runner.CompiledInstructionsExecuted:N0} compiled main instructions, {bus.Hardware.Apu.TranslatedInstructionsExecuted:N0} compiled audio instructions.");
                 outcomes.Add(new
                 {
@@ -156,14 +159,15 @@ internal static class HeadlessProof
         }
     }
 
-    private static void WriteBitmap(string path, SnesHardware hardware)
+    private static void WriteBitmap(string path, SnesHardware hardware, bool widescreen = false)
     {
-        var pixels = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
-        SnesVideoRenderer.RenderFrame(hardware, pixels);
+        var viewport = widescreen ? VideoViewport.Widescreen : VideoViewport.Original;
+        var pixels = new byte[viewport.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
+        SnesVideoRenderer.RenderFrame(hardware, pixels, 1f, viewport);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         using var writer = new BinaryWriter(File.Create(path));
         writer.Write((ushort)0x4D42); writer.Write(54 + pixels.Length); writer.Write(0); writer.Write(54);
-        writer.Write(40); writer.Write(SnesVideoRenderer.Width); writer.Write(-SnesVideoRenderer.Height);
+        writer.Write(40); writer.Write(viewport.Width); writer.Write(-SnesVideoRenderer.Height);
         writer.Write((ushort)1); writer.Write((ushort)32); writer.Write(0); writer.Write(pixels.Length);
         writer.Write(0); writer.Write(0); writer.Write(0); writer.Write(0);
         for (var offset = 0; offset < pixels.Length; offset += 4)

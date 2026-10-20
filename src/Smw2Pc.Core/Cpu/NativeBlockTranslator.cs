@@ -36,10 +36,14 @@ public sealed class NativeBlockTranslator
             typeof(NativeBlockTranslator).Module,
             skipVisibility: true);
         var il = method.GetILGenerator();
+        var instructionAddress = startAddress;
         foreach (var instruction in decoded.Instructions)
         {
             EmitInstruction(il, new CpuInstructionDefinition(instruction.Operation, instruction.AddressingMode),
-                instruction.Operand, instruction.NextProgramCounter);
+                instruction.Operand, instruction.NextProgramCounter,
+                memoryBus.Widescreen.TryGetGraphicsOperand(instructionAddress, instruction.Operand, out var extended)
+                    ? extended : null);
+            instructionAddress = (startAddress & 0xFF0000) | instruction.NextProgramCounter;
             if (instruction.Operation is CpuOperation.ResetStatusBits
                 or CpuOperation.SetStatusBits
                 or CpuOperation.PullStatus
@@ -86,13 +90,22 @@ public sealed class NativeBlockTranslator
         ILGenerator il,
         CpuInstructionDefinition definition,
         uint operand,
-        ushort nextProgramCounter)
+        ushort nextProgramCounter,
+        uint? extendedOperand)
     {
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldarg_1);
         il.Emit(OpCodes.Ldc_I4, (int)definition.Operation);
         il.Emit(OpCodes.Ldc_I4, (int)definition.AddressingMode);
-        il.Emit(OpCodes.Ldc_I4, unchecked((int)operand));
+        if (extendedOperand is { } widened)
+        {
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Callvirt, typeof(SnesMemoryBus).GetProperty(nameof(SnesMemoryBus.Widescreen))!.GetMethod!);
+            il.Emit(OpCodes.Ldc_I4, unchecked((int)operand));
+            il.Emit(OpCodes.Ldc_I4, unchecked((int)widened));
+            il.Emit(OpCodes.Callvirt, typeof(SmwWidescreen).GetMethod(nameof(SmwWidescreen.GraphicsOperand))!);
+        }
+        else il.Emit(OpCodes.Ldc_I4, unchecked((int)operand));
         il.Emit(OpCodes.Ldc_I4, nextProgramCounter);
         il.Emit(OpCodes.Call, ExecuteInstructionMethod);
     }

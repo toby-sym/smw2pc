@@ -7,6 +7,7 @@ public sealed class SmwWidescreen
 {
     private readonly SnesMemoryBus bus;
     private readonly byte[]? extendedData;
+    private readonly Dictionary<uint, (uint Original, uint Extended)> graphicsOperands = [];
     private bool enabled;
 
     internal SmwWidescreen(SnesMemoryBus bus)
@@ -25,13 +26,21 @@ public sealed class SmwWidescreen
                 1, 0xFF, 1, 0xFF, 1, 0xFF, 1, 0xFF])
             || !Matches(data, 0x03B83F, [0x30, 0xC0, 0xA0, 0x80, 0xA0, 0x40, 0x60, 0xB0,
                 1, 0xFF, 1, 0xFF, 1, 0, 1, 0xFF])) return;
+        ReadOnlySpan<byte> drawInfo = [0x9E, 0x6C, 0x18, 0x9E, 0xA0, 0x15, 0xB5, 0xE4,
+            0xC5, 0x1A, 0xBD, 0xE0, 0x14, 0xE5, 0x1B, 0xF0, 3, 0xFE, 0xA0, 0x15,
+            0xBD, 0xE0, 0x14, 0xEB, 0xB5, 0xE4, 0xC2, 0x20, 0x38, 0xE5, 0x1A, 0x18,
+            0x69, 0x40, 0, 0xC9, 0x80, 1, 0xE2, 0x20, 0x2A, 0x29, 1, 0x9D, 0xC4, 0x15];
+        foreach (var start in new[] { first == 0x01AC11 ? 0x01A365 : 0x01A371, 0x02D378, 0x03B760 })
+        {
+            if (!Matches(data, start, drawInfo)) return;
+            graphicsOperands[(uint)(start + 32)] = (0x40, 0x40 + ExtraVisibility);
+            graphicsOperands[(uint)(start + 35)] = (0x180, 0x180 + ExtraVisibility * 2);
+        }
         IsSupported = true;
         extendedData = data.ToArray();
         ExtendBounds(first, 8);
         ExtendBounds(0x02D007, 8);
         ExtendBounds(0x03B83F, 8);
-        ExtendBounds(0x02FEC5, 2);
-        ExtendBounds(0x02FEC9, 2);
         // Leave the stationary offset alone. The two moving boundaries are widened.
         SetOffset(0x02A7F6, 3, 0, -48 - ExtraVisibility);
         SetOffset(0x02A7F6, 3, 2, 288 + ExtraVisibility);
@@ -55,9 +64,28 @@ public sealed class SmwWidescreen
 
     internal void PrepareFrame() => bus.SetPresentationRomData(CanExtendLevel ? extendedData! : bus.Rom.Data);
 
-    internal int GetOriginX(int width)
+    // The compiler emits these six adaptations directly at validated graphics
+    // instructions. No instruction decoder or runtime compilation is introduced.
+    internal bool TryGetGraphicsOperand(uint address, uint original, out uint extended)
     {
-        var camera = ReadWord(0x1A);
+        extended = original;
+        if (!IsSupported || !graphicsOperands.TryGetValue(address & 0x7FFFFF, out var operand)
+            || operand.Original != original) return false;
+        extended = operand.Extended;
+        return true;
+    }
+
+    public uint GraphicsOperand(uint original, uint extended) => CanExtendLevel ? extended : original;
+
+    internal int GetOriginX(int width, float interpolationProgress)
+    {
+        const int sceneScanline = 33; // Below the status bar's IRQ split.
+        var hardware = bus.Hardware;
+        var offset = hardware.GetBackgroundOffsetsForScanline(sceneScanline).Span[0];
+        var (delta, _) = hardware.GetBackgroundScrollDeltaForScanline(sceneScanline, 0);
+        if (Math.Abs(delta) > 16) delta = 0;
+        var camera = (int)MathF.Round(GetLevelXOffset(offset) - delta * (1f - interpolationProgress),
+            MidpointRounding.AwayFromZero);
         var levelWidth = bus.Hardware.ReadWorkRam(0x5D) * 256;
         return Math.Clamp(camera - (width - 256) / 2, 0, Math.Max(0, levelWidth - width)) - camera;
     }
@@ -95,7 +123,7 @@ public sealed class SmwWidescreen
         for (var i = 0; i < count; i++)
         {
             var offset = (short)(extendedData![Offset(address) + i] | (extendedData[Offset(address) + count + i] << 8));
-            SetOffset(address, count, i, offset + (offset >= 0 ? ExtraVisibility : -ExtraVisibility));
+            SetOffset(address, count, i, offset + ((i & 1) == 0 ? ExtraVisibility : -ExtraVisibility));
         }
     }
 

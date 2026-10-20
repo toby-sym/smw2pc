@@ -209,6 +209,7 @@ internal static partial class Program
         SnesControllerButtons keyboardButtons = SnesControllerButtons.None;
         SnesControllerButtons gamepadButtons = SnesControllerButtons.None;
         SnesControllerButtons controllerButtons = SnesControllerButtons.None;
+        var renderWidth = SnesVideoRenderer.Width;
         var frameBuffer = new byte[SnesVideoRenderer.Width * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
         var previousTimestamp = Stopwatch.GetTimestamp();
         var frameAccumulator = 0.0;
@@ -254,6 +255,28 @@ internal static partial class Program
         Task<bool>? batterySaveTask = null;
         var settingsSaveTask = Task.CompletedTask;
 
+        void RenderGameFrame(float progress)
+        {
+            var wide = settings.AspectRatio == GameAspectRatio.Widescreen;
+            var viewport = wide ? VideoViewport.Widescreen : VideoViewport.Original;
+            cpuRunner!.MemoryBus.Widescreen.Enabled = wide;
+            if (renderWidth != viewport.Width)
+            {
+                var replacement = SDL.CreateTexture(renderer, SDL.PixelFormat.ABGR8888,
+                    SDL.TextureAccess.Streaming, viewport.Width, SnesVideoRenderer.Height);
+                if (replacement == IntPtr.Zero)
+                    throw new InvalidOperationException($"Could not create the game texture: {SDL.GetError()}");
+                SDL.SetTextureScaleMode(replacement, SDL.ScaleMode.Nearest);
+                SDL.DestroyTexture(gameTexture);
+                gameTexture = replacement;
+                renderWidth = viewport.Width;
+                frameBuffer = new byte[renderWidth * SnesVideoRenderer.Height * SnesVideoRenderer.BytesPerPixel];
+            }
+            SnesVideoRenderer.RenderFrame(cpuRunner.MemoryBus.Hardware, frameBuffer, progress, viewport);
+            if (!SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, renderWidth * SnesVideoRenderer.BytesPerPixel))
+                statusMessage = $"Could not update the game frame: {SDL.GetError()}";
+        }
+
         void CompleteBatteryWrite()
         {
             if (batterySaveTask is null) return;
@@ -296,6 +319,7 @@ internal static partial class Program
             settingsSaveTask.GetAwaiter().GetResult();
             settings.Save();
             settings = DesktopSettings.Load(rom.Sha256);
+            bus.Widescreen.Enabled = settings.AspectRatio == GameAspectRatio.Widescreen;
             loadedRom = rom;
             cpuRunner = runner;
             saveStore = store;
@@ -640,8 +664,7 @@ internal static partial class Program
                         elapsedSeconds = 0;
                         previousTimestamp = Stopwatch.GetTimestamp();
                         ResetAudio();
-                        SnesVideoRenderer.RenderFrame(cpuRunner.MemoryBus.Hardware, frameBuffer, 1f);
-                        SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, SnesVideoRenderer.Width * SnesVideoRenderer.BytesPerPixel);
+                        RenderGameFrame(1f);
                         statusMessage = "Quick save loaded.";
                     }
                     else if (cpuRunner is not null)
@@ -715,6 +738,7 @@ internal static partial class Program
                 var emulationWorkStartTimestamp = Stopwatch.GetTimestamp();
                 try
                 {
+                    cpuRunner.MemoryBus.Widescreen.Enabled = settings.AspectRatio == GameAspectRatio.Widescreen;
                     var frameDuration = 1.0 / loadedRom!.Header.FrameRateHz;
                     if (audioStream != IntPtr.Zero)
                     {
@@ -832,14 +856,7 @@ internal static partial class Program
                             0.0,
                             1.0);
                         presentedFrameRendererStart = Stopwatch.GetTimestamp();
-                        SnesVideoRenderer.RenderFrame(
-                            cpuRunner.MemoryBus.Hardware,
-                            frameBuffer,
-                            interpolationProgress);
-                        if (!SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, SnesVideoRenderer.Width * SnesVideoRenderer.BytesPerPixel))
-                        {
-                            statusMessage = $"Could not update the game frame: {SDL.GetError()}";
-                        }
+                        RenderGameFrame(interpolationProgress);
                         gameRenderTicksSinceLastPresentation += Stopwatch.GetTimestamp() - presentedFrameRendererStart;
                     }
                 }
@@ -868,6 +885,7 @@ internal static partial class Program
             else
             {
                 frameAccumulator = 0;
+                if (cpuRunner is not null && renderRequested) RenderGameFrame(1f);
             }
 
             if (renderRequested)
@@ -1834,7 +1852,7 @@ internal static partial class Program
         return aspectRatio switch
         {
             GameAspectRatio.OriginalPixels => "Original pixels (8:7)",
-            GameAspectRatio.Widescreen => "Widescreen (16:9)",
+            GameAspectRatio.Widescreen => "Extended view (16:9)",
             GameAspectRatio.Stretch => "Stretch to window",
             _ => "Television (4:3)",
         };

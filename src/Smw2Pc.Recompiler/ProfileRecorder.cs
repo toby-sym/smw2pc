@@ -14,6 +14,7 @@ internal sealed class ProfileRecorder(CodeDiscovery discovery)
     public ProofProfile Run(SnesRom rom, string name, int frames, Action<string>? log = null, CancellationToken cancellationToken = default)
     {
         var bus = new SnesMemoryBus(rom);
+        bus.Widescreen.Enabled = name.StartsWith("wide-", StringComparison.Ordinal);
         var runner = new NativeCpuRunner(bus) { BlockDiscovered = discovery.AddObserved };
         bus.Hardware.Apu.InstructionObserved = (pc, opcode) => AudioEntries.Add((pc, opcode));
         var proof = new ProofProfile(name, frames, []);

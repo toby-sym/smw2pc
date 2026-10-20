@@ -12,13 +12,18 @@ public static class ProofPlayback
 {
     public static SnesControllerButtons Buttons(string profile, int frame, SnesMemoryBus bus)
     {
+        var wide = profile.StartsWith("wide-", StringComparison.Ordinal);
+        if (wide) profile = profile[5..];
         if (profile == "attract" || frame < 180) return SnesControllerButtons.None;
         var mode = bus.Hardware.ReadWorkRam(0x100);
         if (mode < 0x0B)
             return frame % 60 < 3 ? SnesControllerButtons.Start : SnesControllerButtons.None;
         if (mode == 0x0E)
-            return (profile == "exercise" ? SnesControllerButtons.Right : SnesControllerButtons.Left)
-                | (frame % 180 is >= 120 and < 123 ? SnesControllerButtons.B : SnesControllerButtons.None);
+        {
+            var mapDirection = profile == "exercise" ? SnesControllerButtons.Right : SnesControllerButtons.Left;
+            if (wide && frame % 30 >= 15) mapDirection = SnesControllerButtons.None;
+            return mapDirection | (frame % 180 is >= 120 and < 123 ? SnesControllerButtons.B : SnesControllerButtons.None);
+        }
         if (mode != 0x14)
             return frame % 90 < 3 ? SnesControllerButtons.B : SnesControllerButtons.None;
         if (bus.Hardware.ReadWorkRam(0x1426) != 0)

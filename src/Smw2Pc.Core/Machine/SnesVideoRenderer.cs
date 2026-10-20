@@ -33,7 +33,7 @@ public static partial class SnesVideoRenderer
     {
         ArgumentNullException.ThrowIfNull(hardware);
         var view = viewport ?? VideoViewport.Original;
-        if (view.Width is < Width or > VideoViewport.WidescreenWidth)
+        if (view.Width is not (Width or VideoViewport.WidescreenWidth))
             throw new ArgumentOutOfRangeException(nameof(viewport));
         var width = view.Width;
         var framePixelCount = width * Height;
@@ -47,14 +47,14 @@ public static partial class SnesVideoRenderer
         var previousWidescreen = activeWidescreen;
         activeViewport = view;
         activeWidescreen = width > Width && hardware.Widescreen?.CanExtendLevel == true ? hardware.Widescreen : null;
-        if (activeWidescreen is not null)
-            activeViewport = view = view with { OriginX = activeWidescreen.GetOriginX(view.Width) };
         interpolationProgress = float.IsFinite(interpolationProgress)
             ? Math.Clamp(interpolationProgress, 0f, 1f)
             : 1f;
         var scrollInterpolationProgress = hardware.HasPreviousPpuFrameScrollOffsets
             ? interpolationProgress
             : 1f;
+        if (activeWidescreen is not null)
+            activeViewport = view = view with { OriginX = activeWidescreen.GetOriginX(view.Width, scrollInterpolationProgress) };
         var videoRam = hardware.VideoRam.Span;
         var colorRam = hardware.ColorRam.Span;
         var backdropColor = ReadColorValue(colorRam, 0);
