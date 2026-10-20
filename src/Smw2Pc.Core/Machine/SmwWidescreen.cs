@@ -84,8 +84,10 @@ public sealed class SmwWidescreen
         var offset = hardware.GetBackgroundOffsetsForScanline(sceneScanline).Span[0];
         var (delta, _) = hardware.GetBackgroundScrollDeltaForScanline(sceneScanline, 0);
         if (Math.Abs(delta) > 16) delta = 0;
-        var camera = (int)MathF.Round(GetLevelXOffset(offset) - delta * (1f - interpolationProgress),
-            MidpointRounding.AwayFromZero);
+        // Round in the PPU ring's coordinates, just like the original renderer.
+        // Rounding a full world coordinate can differ by one pixel at a ring wrap.
+        var camera = GetLevelXOffset(offset) - offset
+            + (int)MathF.Round(offset - delta * (1f - interpolationProgress), MidpointRounding.AwayFromZero);
         var levelWidth = bus.Hardware.ReadWorkRam(0x5D) * 256;
         return Math.Clamp(camera - (width - 256) / 2, 0, Math.Max(0, levelWidth - width)) - camera;
     }

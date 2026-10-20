@@ -951,8 +951,8 @@ public static partial class SnesVideoRenderer
         var tileCache = activeTileDecodeCache!;
         var sampleCache = backgroundSampleCache ??= new BackgroundSampleCache();
         var levelMap = activeWidescreen is not null && background == 0 && tileWidth == 8;
-        var levelX = levelMap ? activeWidescreen!.GetLevelXOffset(horizontalOffset) : horizontalOffset;
-        var sampleColumns = sampleCache.GetColumns(background, levelX + originX, pixelWidth, sampleShiftX, !levelMap);
+        var levelBaseX = levelMap ? activeWidescreen!.GetLevelXOffset(horizontalOffset) - horizontalOffset : 0;
+        var sampleColumns = sampleCache.GetColumns(background, horizontalOffset + originX, pixelWidth, sampleShiftX, !levelMap);
         var cachedSegment = int.MinValue;
         var drawSegment = false;
         var horizontalFlip = false;
@@ -967,15 +967,18 @@ public static partial class SnesVideoRenderer
 
             if (hud && (uint)(screenX + originX) >= Width) continue;
             var worldX = sampleColumns[screenX];
-            var segment = worldX >> 3;
+            // The original viewport retains the live VRAM tile changes, including
+            // bounce-block timing. Only the added sides bypass the streaming ring.
+            var extendedColumn = levelMap && (uint)(screenX + originX) >= Width;
+            var segment = ((worldX >> 3) * 2) + (extendedColumn ? 1 : 0);
             if (segment != cachedSegment)
             {
                 // Map entries, palette selection and tile decoding are shared by
                 // an eight-pixel row. Keep exact per-pixel scroll rounding at its edges.
                 cachedSegment = segment;
-                var mapIndex = GetMapByteIndex(mapBase, mapWidth, worldX >> tileShift, cellY);
-                var entry = levelMap
-                    ? activeWidescreen!.ReadForegroundEntry(worldX, sampleY)
+                var mapIndex = GetMapByteIndex(mapBase, mapWidth, (worldX & (pixelWidth - 1)) >> tileShift, cellY);
+                var entry = extendedColumn
+                    ? activeWidescreen!.ReadForegroundEntry(levelBaseX + worldX, sampleY)
                     : videoRam[mapIndex] | (videoRam[mapIndex + 1] << 8);
                 drawSegment = entry >= 0 && (priority < 0 || ((entry >> 13) & 1) == priority);
                 if (drawSegment)

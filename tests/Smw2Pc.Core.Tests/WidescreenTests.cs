@@ -30,6 +30,83 @@ public sealed class WidescreenTests
     [TestMethod]
     public void ObjectsOnBothExtendedSidesUseTheirNineBitCoordinates()
     {
+        var bus = CreateObjectScene();
+        WriteObjects(bus, (270, 40), (500, 40));
+        bus.Hardware.AdvanceCpuInstructions(bus, 18_000);
+        var pixels = new byte[342 * 224 * 4];
+        SnesVideoRenderer.RenderFrame(bus.Hardware, pixels, 1f, VideoViewport.Widescreen);
+        Assert.AreEqual((byte)255, pixels[(40 * 342 + 313) * 4]); // +270 +43
+        Assert.AreEqual((byte)255, pixels[(40 * 342 + 31) * 4]); // -12 +43
+        Assert.AreEqual((byte)0, pixels[(40 * 342 + 57) * 4]); // no +270 wrapping to +14
+    }
+
+    [TestMethod]
+    [DataRow(254, 258, 256)]
+    [DataRow(258, 254, 256)]
+    [DataRow(510, 2, 0)]
+    [DataRow(2, 510, 0)]
+    public void ObjectInterpolationCrossesNineBitBoundariesContinuously(int previous, int current, int halfway)
+    {
+        var bus = CreateObjectScene();
+        WriteObjects(bus, (previous, 40));
+        bus.Hardware.AdvanceCpuInstructions(bus, 18_000);
+        WriteObjects(bus, (current, 40));
+        bus.Hardware.AdvanceCpuInstructions(bus, 18_000);
+        var original = new byte[256 * 224 * 4];
+        var wide = new byte[342 * 224 * 4];
+        SnesVideoRenderer.RenderFrame(bus.Hardware, original, 0.5f);
+        SnesVideoRenderer.RenderFrame(bus.Hardware, wide, 0.5f, VideoViewport.Widescreen);
+        Assert.AreEqual((byte)255, wide[(40 * 342 + halfway + 43) * 4]);
+        for (var y = 0; y < 224; y++)
+            Assert.IsTrue(original.AsSpan(y * 256 * 4, 256 * 4)
+                .SequenceEqual(wide.AsSpan((y * 342 + 43) * 4, 256 * 4)), $"Row {y}");
+    }
+
+    [TestMethod]
+    public void ModeSevenSamplesExtraWorldColumnsAndFullWidthWindowsCoverThem()
+    {
+        var bus = new SnesMemoryBus(HomebrewGame.Create());
+        bus.WriteByte(0x2100, 15);
+        bus.WriteByte(0x2105, 7);
+        bus.WriteByte(0x212C, 1);
+        bus.WriteByte(0x211B, 0); bus.WriteByte(0x211B, 1); // A = 1
+        bus.WriteByte(0x211C, 0); bus.WriteByte(0x211C, 0); // B = 0
+        bus.WriteByte(0x211D, 0); bus.WriteByte(0x211D, 0); // C = 0
+        bus.WriteByte(0x211E, 0); bus.WriteByte(0x211E, 1); // D = 1
+        bus.WriteByte(0x2121, 1);
+        bus.WriteByte(0x2122, 31); bus.WriteByte(0x2122, 0); // red
+        bus.WriteByte(0x2122, 0xE0); bus.WriteByte(0x2122, 3); // green
+        bus.WriteByte(0x2115, 0x80);
+        bus.WriteByte(0x2116, 0); bus.WriteByte(0x2117, 0);
+        for (var word = 0; word < 0x8000; word++)
+        {
+            bus.WriteByte(0x2118, (byte)(word % 128 >= 32 ? 1 : 0));
+            bus.WriteByte(0x2119, (byte)(word < 64 ? 1 : word < 128 ? 2 : 0));
+        }
+        bus.Hardware.AdvanceCpuInstructions(bus, 18_000);
+        var pixels = new byte[342 * 224 * 4];
+        SnesVideoRenderer.RenderFrame(bus.Hardware, pixels, 1f, VideoViewport.Widescreen);
+        var center = (40 * 342 + 43) * 4;
+        var right = (40 * 342 + 300) * 4;
+        Assert.AreEqual((byte)255, pixels[center]);
+        Assert.AreEqual((byte)0, pixels[center + 1]);
+        Assert.AreEqual((byte)0, pixels[right]);
+        Assert.AreEqual((byte)255, pixels[right + 1]);
+        bus.WriteByte(0x2125, 0x20); // Color window 1 enabled, 0..255.
+        bus.WriteByte(0x2126, 0); bus.WriteByte(0x2127, 255);
+        bus.WriteByte(0x2130, 0x80); // Clip main screen inside the color window.
+        bus.Hardware.AdvanceCpuInstructions(bus, 18_000);
+        SnesVideoRenderer.RenderFrame(bus.Hardware, pixels, 1f, VideoViewport.Widescreen);
+        for (var x = 0; x < 342; x++)
+        {
+            var pixel = (40 * 342 + x) * 4;
+            Assert.AreEqual((byte)0, pixels[pixel]);
+            Assert.AreEqual((byte)0, pixels[pixel + 1]);
+        }
+    }
+
+    private static SnesMemoryBus CreateObjectScene()
+    {
         var bus = new SnesMemoryBus(HomebrewGame.Create());
         bus.WriteByte(0x2100, 15);
         bus.WriteByte(0x2101, 0);
@@ -45,21 +122,26 @@ public sealed class WidescreenTests
             bus.WriteByte(0x2118, (byte)(y < 8 ? 255 : 0));
             bus.WriteByte(0x2119, 0);
         }
+        return bus;
+    }
+
+    private static void WriteObjects(SnesMemoryBus bus, params (int X, int Y)[] objects)
+    {
         bus.WriteByte(0x2102, 0);
         bus.WriteByte(0x2103, 0);
         for (var i = 0; i < 128; i++)
         {
-            bus.WriteByte(0x2104, (byte)(i == 0 ? 270 : i == 1 ? 500 : 0));
-            bus.WriteByte(0x2104, (byte)(i < 2 ? 40 : 240));
+            bus.WriteByte(0x2104, (byte)(i < objects.Length ? objects[i].X : 0));
+            bus.WriteByte(0x2104, (byte)(i < objects.Length ? objects[i].Y : 240));
             bus.WriteByte(0x2104, 0);
             bus.WriteByte(0x2104, 0);
         }
-        for (var i = 0; i < 32; i++) bus.WriteByte(0x2104, (byte)(i == 0 ? 5 : 0));
-        bus.Hardware.AdvanceCpuInstructions(bus, 18_000);
-        var pixels = new byte[342 * 224 * 4];
-        SnesVideoRenderer.RenderFrame(bus.Hardware, pixels, 1f, VideoViewport.Widescreen);
-        Assert.AreEqual((byte)255, pixels[(40 * 342 + 313) * 4]); // +270 +43
-        Assert.AreEqual((byte)255, pixels[(40 * 342 + 31) * 4]); // -12 +43
-        Assert.AreEqual((byte)0, pixels[(40 * 342 + 57) * 4]); // no +270 wrapping to +14
+        for (var group = 0; group < 32; group++)
+        {
+            byte high = 0;
+            for (var i = 0; i < 4 && group * 4 + i < objects.Length; i++)
+                high |= (byte)(((objects[group * 4 + i].X >> 8) & 1) << (i * 2));
+            bus.WriteByte(0x2104, high);
+        }
     }
 }
