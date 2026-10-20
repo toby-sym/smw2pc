@@ -7,6 +7,8 @@ param(
 
     [string] $RuntimeIdentifier = "win-x64",
 
+    [string] $EntryPoints = "",
+
     [ValidateRange(60, 36000)]
     [int] $ProfileFrames = 3600,
 
@@ -32,9 +34,14 @@ if ([IO.Path]::GetExtension($romPath) -notin @(".sfc", ".smc")) {
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 New-Item -ItemType Directory -Force -Path $generatedDirectory | Out-Null
 
+$recompilerArguments = @($romPath, $generatedDirectory, "--frames", $ProfileFrames)
+if (-not [string]::IsNullOrWhiteSpace($EntryPoints)) {
+    $recompilerArguments += @("--entry-points", $EntryPoints)
+}
+
 dotnet run --project $recompilerProjectPath `
     --configuration Release `
-    -- $romPath $generatedDirectory --frames $ProfileFrames
+    -- @recompilerArguments
 
 if ($LASTEXITCODE -ne 0) {
     throw "Static ROM analysis failed with exit code $LASTEXITCODE."

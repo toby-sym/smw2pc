@@ -9,7 +9,8 @@ namespace Smw2Pc.Recompiler;
 public static class RomCompilation
 {
     public static void Generate(string romPath, string outputDirectory, int frames = 3600,
-        string[]? profiles = null, Action<string>? log = null, CancellationToken cancellationToken = default)
+        string[]? profiles = null, Action<string>? log = null, CancellationToken cancellationToken = default,
+        uint[]? entryPoints = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(frames, 1);
         var rom = SnesRom.Load(romPath);
@@ -31,6 +32,7 @@ public static class RomCompilation
             proofs.Add(recorder.Run(rom, profile, frames, log, cancellationToken));
         }
         log?.Invoke("Discovering static control flow...");
+        foreach (var entryPoint in entryPoints ?? []) discovery.AddEntryPoint(entryPoint);
         discovery.Analyze();
         cancellationToken.ThrowIfCancellationRequested();
         var blocks = discovery.Blocks;
