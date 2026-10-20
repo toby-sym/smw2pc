@@ -68,6 +68,12 @@ var driver = Task.Run(async () =>
         await Wait(() => File.Exists(Path.Combine(directory, "save.srm")));
         Key(SDL.Keycode.F9); await Task.Delay(100);
         var paused = await Save(); await Task.Delay(100);
+        Key(SDL.Keycode.F2); await Task.Delay(50);
+        Click(700, 240); await Task.Delay(100); // Television -> extended 16:9, while paused.
+        Equal(paused, await Save(), true, "Widescreen mode changed the paused machine.");
+        for (var aspect = 0; aspect < 3; aspect++) { Click(700, 240); await Task.Delay(50); }
+        Equal(paused, await Save(), true, "Switching viewport sizes changed the paused machine.");
+        Key(SDL.Keycode.F2); await Task.Delay(50);
         Equal(paused, await Save(), true, "Manual pause advanced the machine.");
         Key(SDL.Keycode.F9); await Task.Delay(150);
         Key(SDL.Keycode.F9); await Task.Delay(100);
@@ -90,6 +96,8 @@ var driver = Task.Run(async () =>
         Event(SDL.EventType.WindowFocusLost); await Task.Delay(100);
         var active = await Save(); await Task.Delay(100);
         Equal(active, await Save(), false, "Disabling focus pause did not keep gameplay running.");
+        Click(642, 147); await Task.Delay(50); // Display tab.
+        Click(700, 240); await Task.Delay(100); // Persist extended 16:9 for this ROM.
     }
     finally { Event(SDL.EventType.Quit); }
 });
@@ -97,7 +105,7 @@ var exitCode = (int)program.GetMethod("Main", flags)!.Invoke(null, [Array.Empty<
 await driver;
 if (exitCode != 0) throw new InvalidOperationException($"Player exited with {exitCode}.");
 var settings = DesktopSettings.Load(rom.Sha256);
-if (settings.VolumePercent != 25 || settings.PauseWhenUnfocused)
+if (settings.VolumePercent != 25 || settings.PauseWhenUnfocused || settings.AspectRatio != GameAspectRatio.Widescreen)
     throw new InvalidOperationException("Player controls did not persist per-ROM preferences.");
 
 // Render the real panel at minimum and default window sizes for layout inspection.
@@ -128,5 +136,6 @@ File.WriteAllText(Path.Combine(output, "ui-result.json"), JsonSerializer.Seriali
     FocusPause = true,
     QuickSaveRestore = true,
     PerRomPreferences = true,
+    WidescreenSwitching = true,
 }));
-Console.WriteLine("Player UI checks passed: pause, focus, quick save/load and volume preferences.");
+Console.WriteLine("Player UI checks passed: pause, focus, quick save/load, volume and widescreen switching.");

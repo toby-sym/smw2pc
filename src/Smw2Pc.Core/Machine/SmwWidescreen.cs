@@ -14,7 +14,8 @@ public sealed class SmwWidescreen
     {
         this.bus = bus;
         var data = bus.Rom.Data.Span;
-        if (data.Length != 0x80000 || bus.Rom.Header.Title != "SUPER MARIOWORLD") return;
+        IsSuperMarioWorld = bus.Rom.Header.Title == "SUPER MARIOWORLD";
+        if (!IsSuperMarioWorld || data.Length != 0x80000) return;
         // Validate each region's actual data layout before adapting it. Code bytes and
         // the cartridge hash remain original, including in the strict compiled player.
         ReadOnlySpan<byte> despawn = [0x30, 0xC0, 0xA0, 0xC0, 0xA0, 0xF0, 0x60, 0x90,
@@ -47,6 +48,7 @@ public sealed class SmwWidescreen
     }
 
     private const int ExtraVisibility = VideoViewport.WidescreenWidth - SnesVideoRenderer.Width;
+    public bool IsSuperMarioWorld { get; }
     public bool IsSupported { get; }
     public bool Enabled
     {
@@ -81,7 +83,7 @@ public sealed class SmwWidescreen
     {
         const int sceneScanline = 33; // Below the status bar's IRQ split.
         var hardware = bus.Hardware;
-        var offset = hardware.GetBackgroundOffsetsForScanline(sceneScanline).Span[0];
+        var offset = hardware.GetBackgroundOffsetsForScanline(sceneScanline).Span[0] & 511;
         var (delta, _) = hardware.GetBackgroundScrollDeltaForScanline(sceneScanline, 0);
         if (Math.Abs(delta) > 16) delta = 0;
         // Round in the PPU ring's coordinates, just like the original renderer.

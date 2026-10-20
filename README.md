@@ -14,6 +14,7 @@ Build errors are logged to `%LOCALAPPDATA%\SMW2PC\build.log`.
 Arrows move; **Z** jumps; **X** runs. **Enter** starts or pauses; **F2** opens settings.
 **F5/F8** quick save/load; **F9** pauses the player; **F10** mutes; **F11** toggles fullscreen.
 The Player tab controls volume and focus pause. Saves and preferences are kept per ROM.
+[Extended 16:9 view](docs/widescreen.md) shows more terrain in supported horizontal levels.
 [Player features and gameplay checks](docs/player-comfort.md) cover saves, reports, and replay scripts.
 
 ## Development and releases

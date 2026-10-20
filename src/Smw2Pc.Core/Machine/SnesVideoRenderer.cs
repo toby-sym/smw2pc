@@ -131,7 +131,7 @@ public static partial class SnesVideoRenderer
                 }
             }
 
-            if (width > Width && hardware.Widescreen?.IsSupported == true && activeWidescreen is null)
+            if (width > Width && hardware.Widescreen?.IsSuperMarioWorld == true && activeWidescreen is null)
             {
                 var left = -VideoViewport.Widescreen.OriginX;
                 for (var y = 0; y < Height; y++)
@@ -902,7 +902,7 @@ public static partial class SnesVideoRenderer
         float interpolationProgress)
     {
         var width = activeViewport.Width;
-        var hud = hardware.Widescreen?.IsSupported == true && width > Width && background == 2 && screenY < 32;
+        var hud = hardware.Widescreen?.IsSuperMarioWorld == true && width > Width && background == 2 && screenY < 32;
         var originX = hud ? VideoViewport.Widescreen.OriginX : activeViewport.OriginX;
         var mapRegister = registers[0x07 + background];
         var mapBase = (mapRegister & 0xFC) << 9;

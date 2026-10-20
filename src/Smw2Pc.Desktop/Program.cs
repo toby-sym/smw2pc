@@ -885,7 +885,9 @@ internal static partial class Program
             else
             {
                 frameAccumulator = 0;
-                if (cpuRunner is not null && renderRequested) RenderGameFrame(1f);
+                if (cpuRunner is not null && renderRequested
+                    && renderWidth != (settings.AspectRatio == GameAspectRatio.Widescreen ? VideoViewport.WidescreenWidth : SnesVideoRenderer.Width))
+                    RenderGameFrame(1f);
             }
 
             if (renderRequested)
@@ -1630,6 +1632,9 @@ internal static partial class Program
             DrawSettingsRow(renderer, textRenderer, GetAspectRatioRow(panel), $"Aspect ratio: {GetAspectRatioName(settings.AspectRatio)}");
             DrawText(renderer, textRenderer, "Pixel scaling: Sharp (nearest-neighbor)",
                 panel.X + 20, panel.Y + 194, 13, MakeUiColor(181, 194, 211));
+            if (settings.AspectRatio == GameAspectRatio.Widescreen)
+                DrawText(renderer, textRenderer, "16:9 extends supported horizontal levels.",
+                    panel.X + 20, panel.Y + 213, 11, MakeUiColor(181, 194, 211));
 
             DrawText(renderer, textRenderer, $"Presentation cap: {settings.RenderFrameRate} FPS",
                 panel.X + 20, panel.Y + 242, 14, MakeUiColor(248, 250, 255));

@@ -1,11 +1,44 @@
 using Smw2Pc.Core.Cpu;
 using Smw2Pc.Core.Machine;
+using Smw2Pc.Core.Rom;
+using System.Text;
 
 namespace Smw2Pc.Core.Tests;
 
 [TestClass]
 public sealed class WidescreenTests
 {
+    [TestMethod]
+    public void UnrecognizedSmwLayoutsRetainTheOriginalFraming()
+    {
+        var bytes = HomebrewGame.Create().Data.ToArray();
+        Encoding.ASCII.GetBytes("SUPER MARIOWORLD".PadRight(21)).CopyTo(bytes, 0x7FC0);
+        var bus = new SnesMemoryBus(SnesRom.LoadBytes(bytes, "different-layout.sfc"));
+        var runner = new NativeCpuRunner(bus);
+        bus.Widescreen.Enabled = true;
+        runner.Run(18_000 * 40);
+        Assert.IsTrue(bus.Widescreen.IsSuperMarioWorld);
+        Assert.IsFalse(bus.Widescreen.IsSupported);
+        var original = new byte[256 * 224 * 4];
+        var wide = new byte[342 * 224 * 4];
+        SnesVideoRenderer.RenderFrame(bus.Hardware, original, 1f);
+        SnesVideoRenderer.RenderFrame(bus.Hardware, wide, 1f, VideoViewport.Widescreen);
+        for (var y = 0; y < 224; y++)
+        {
+            Assert.IsTrue(original.AsSpan(y * 256 * 4, 256 * 4)
+                .SequenceEqual(wide.AsSpan((y * 342 + 43) * 4, 256 * 4)));
+            for (var x = 0; x < 342; x++)
+            {
+                if (x is >= 43 and < 299) continue;
+                var pixel = (y * 342 + x) * 4;
+                Assert.AreEqual((byte)0, wide[pixel]);
+                Assert.AreEqual((byte)0, wide[pixel + 1]);
+                Assert.AreEqual((byte)0, wide[pixel + 2]);
+                Assert.AreEqual((byte)255, wide[pixel + 3]);
+            }
+        }
+    }
+
     [TestMethod]
     public void WiderPresentationPreservesCenterPixelsAndMachineState()
     {
