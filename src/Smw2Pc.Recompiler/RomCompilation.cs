@@ -37,12 +37,14 @@ public static class RomCompilation
         File.WriteAllText(Path.Combine(directory, "proof.json"), JsonSerializer.Serialize(new ProofDocument(rom.Sha256, proofs), json));
         File.WriteAllText(Path.Combine(directory, "manifest.json"), JsonSerializer.Serialize(new
         {
-            FormatVersion = 1,
+            FormatVersion = 2,
+            BuildStatus = "Analysis complete; executable verification pending",
             rom.Header.Title,
             rom.Sha256,
             FramesPerProfile = frames,
             Profiles = profiles,
             MainCpuBlocks = blocks.Count,
+            AddressCoverage = CompilationReport.AddressCoverage(blocks),
             WritableCodeVariants = blocks.Count(b => (b.StartAddress >> 16) is 0x7E or 0x7F),
             AudioEntries = recorder.AudioEntries.Count,
             AudioDiscovery = "Observed SPC700 instructions plus every SPC RAM byte value captured at proof checkpoints",
@@ -53,6 +55,7 @@ public static class RomCompilation
             UnresolvedStaticTransfers = discovery.UnresolvedTransfers.Order().ToArray(),
             CoverageNote = "Static closure plus recorded execution paths. Strict player rejects uncompiled code; this is not a whole-game coverage guarantee.",
         }, json));
+        CompilationReport.WriteHtml(directory);
         log?.Invoke($"Emitted {blocks.Count:N0} main CPU blocks and {recorder.AudioEntries.Count:N0} audio entries in {watch.Elapsed.TotalSeconds:0.0}s.");
     }
 }

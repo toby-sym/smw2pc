@@ -9,6 +9,7 @@ using Microsoft.CodeAnalysis.Text;
 using Microsoft.NET.HostModel.AppHost;
 using Microsoft.NET.HostModel.Bundle;
 using Smw2Pc.Core.Rom;
+using Smw2Pc.Core.Storage;
 using Smw2Pc.Recompiler;
 
 namespace Smw2Pc.Builder;
@@ -37,9 +38,19 @@ internal static class GameBuilder
         var workspace = Path.Combine(Path.GetTempPath(), "smw2pc", "builds", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workspace);
         string? replacement = null;
+        var generated = Path.Combine(workspace, "generated");
+        void CopyReports(string status, string? error = null)
+        {
+            if (!File.Exists(Path.Combine(generated, "manifest.json"))) return;
+            CompilationReport.SetBuildStatus(generated, status, error);
+            File.Copy(Path.Combine(generated, "manifest.json"), Path.Combine(outputDirectory, "SMW-compatibility.json"), overwrite: true);
+            File.Copy(Path.Combine(generated, "compatibility.html"), Path.Combine(outputDirectory, "SMW-compatibility.html"), overwrite: true);
+        }
         try
         {
             _ = SnesRom.Load(romPath);
+            try { RecentRoms.Add(romPath); }
+            catch (Exception recentError) when (recentError is IOException or UnauthorizedAccessException) { }
             Directory.CreateDirectory(outputDirectory);
             var writeCheck = Path.Combine(outputDirectory, $".smw2pc-{Guid.NewGuid():N}.tmp");
             using (File.Create(writeCheck)) { }
@@ -50,8 +61,8 @@ internal static class GameBuilder
             using (var archive = new ZipArchive(resource, ZipArchiveMode.Read))
                 archive.ExtractToDirectory(workspace);
 
-            var generated = Path.Combine(workspace, "generated");
             RomCompilation.Generate(romPath, generated, log: Log, cancellationToken: cancellationToken);
+            CopyReports("Analysis complete; compiling executable");
             var template = Path.Combine(workspace, "player");
             var references = Directory.GetFiles(Path.Combine(workspace, "references"), "*.dll")
                 .Select(path => MetadataReference.CreateFromFile(path)).ToArray();
@@ -111,6 +122,7 @@ internal static class GameBuilder
             Log("Verifying compiled gameplay...");
             await RunCheck(executable, ["--verify"], Log, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
+            CopyReports("Passed: compiled player and scripted differential verification");
 
             Directory.CreateDirectory(outputDirectory);
             var destination = Path.Combine(Path.GetFullPath(outputDirectory), "SMW.exe");
@@ -122,6 +134,9 @@ internal static class GameBuilder
         }
         catch (Exception exception)
         {
+            try { CopyReports(exception is OperationCanceledException ? "Cancelled" : "Failed", exception.Message); }
+            catch (Exception reportError) when (reportError is IOException or UnauthorizedAccessException)
+            { Log($"Could not write compatibility report: {reportError.Message}"); }
             Log(exception.ToString());
             throw;
         }
