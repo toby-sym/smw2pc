@@ -12,6 +12,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\Fixtures\HomebrewRom.cs" Link="Fixtures\HomebrewRom.cs" />
+    <None Include="..\Fixtures\*.json" Link="Fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
   </ItemGroup>
 

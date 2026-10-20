@@ -1,0 +1,38 @@
+{
+  "FormatVersion": 1,
+  "RomSha256": "B23673B226FF6D9E2CECFD1BC7D30A8C3930A4B518B6E4EE63019D881C949698",
+  "Frames": 120,
+  "CheckpointEvery": 20,
+  "Inputs": [
+    {
+      "Frame": 0,
+      "Buttons": 0,
+      "PlayerTwo": 0
+    },
+    {
+      "Frame": 20,
+      "Buttons": 128,
+      "PlayerTwo": 0
+    },
+    {
+      "Frame": 40,
+      "Buttons": 129,
+      "PlayerTwo": 0
+    },
+    {
+      "Frame": 60,
+      "Buttons": 64,
+      "PlayerTwo": 0
+    },
+    {
+      "Frame": 80,
+      "Buttons": 0,
+      "PlayerTwo": 0
+    },
+    {
+      "Frame": 100,
+      "Buttons": 8,
+      "PlayerTwo": 0
+    }
+  ]
+}

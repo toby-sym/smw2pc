@@ -2,8 +2,9 @@ namespace Smw2Pc.Core.Storage;
 
 public static class PlayerFiles
 {
-    public static string Root => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SMW2PC");
+    public static string Root => Environment.GetEnvironmentVariable("SMW2PC_DATA_DIRECTORY") is { Length: > 0 } directory
+        ? Path.GetFullPath(directory)
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SMW2PC");
 
     public static string RomDirectory(string sha256, string? root = null)
     {
