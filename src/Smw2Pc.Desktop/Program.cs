@@ -6,8 +6,9 @@ using Smw2Pc.Core.Cpu;
 using Smw2Pc.Core.Machine;
 using Smw2Pc.Core.Recompilation;
 using Smw2Pc.Core.Rom;
+using Smw2Pc.Core.Storage;
 
-internal static class Program
+internal static partial class Program
 {
     private const string CompiledRomResourceName = "Smw2Pc.Desktop.CompiledRom";
     private const int InstructionsPerFrame = 18000;
@@ -38,6 +39,7 @@ internal static class Program
     {
         Display,
         Controls,
+        Player,
     }
 
     private enum BindingMode
@@ -241,6 +243,67 @@ internal static class Program
         var presentTicksSinceLastPresentation = 0L;
         var pacerWaitTicksSinceLastPresentation = 0L;
 
+        GameSaveStore? saveStore = null;
+        var pendingPlayerCommand = PlayerCommand.None;
+        var manuallyPaused = false;
+        var windowFocused = true;
+        var wasPaused = false;
+        var appliedFullscreen = false;
+        var appliedGain = -1f;
+        var nextBatterySaveTimestamp = 0L;
+
+        void PersistBattery()
+        {
+            if (cpuRunner is null || saveStore is null) return;
+            try { saveStore.SaveBattery(cpuRunner.MemoryBus); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            { statusMessage = $"Could not save progress: {exception.Message}"; }
+        }
+
+        void ResetAudio()
+        {
+            if (audioStream == IntPtr.Zero) return;
+            SDL.PauseAudioStreamDevice(audioStream);
+            SDL.ClearAudioStream(audioStream);
+            SDL.SetAudioStreamFrequencyRatio(audioStream, 1f);
+            audioStreamPaused = true;
+            smoothedAudioQueueSeconds = AudioTargetQueueSeconds;
+        }
+
+        void StartGame(SnesRom rom)
+        {
+            // Validate the replacement before releasing the running game.
+            var bus = new SnesMemoryBus(rom);
+            var runner = new NativeCpuRunner(bus);
+            var store = new GameSaveStore(rom);
+            var warning = string.Empty;
+            try { store.LoadBattery(bus); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+            { warning = $" | Could not load progress: {exception.Message}"; }
+            PersistBattery();
+            settings.Save();
+            settings = DesktopSettings.Load(rom.Sha256);
+            loadedRom = rom;
+            cpuRunner = runner;
+            saveStore = store;
+            keyboardButtons = gamepadButtons = controllerButtons = SnesControllerButtons.None;
+            manuallyPaused = false;
+            wasPaused = false;
+            rebindingAction = null;
+            appliedGain = -1;
+            if (!settings.Fullscreen) SDL.SetWindowSize(window, settings.WindowWidth, settings.WindowHeight);
+            SDL.SetWindowTitle(window, $"{rom.Header.Title} - SMW2PC");
+            ResetAudio();
+            frameAccumulator = 1.0 / rom.Header.FrameRateHz;
+            smoothedRenderToPresentTicks = 0;
+            previousTimestamp = Stopwatch.GetTimestamp();
+            nextPresentationTimestamp = previousTimestamp;
+            nextBatterySaveTimestamp = previousTimestamp + Stopwatch.Frequency * 2;
+            statusMessage = $"Running {rom.Header.Title} | {rom.Header.FrameRateHz:0.##} Hz" + warning;
+            try { RecentRoms.Add(rom.SourcePath); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+        }
+
         using (var compiledRomStream = typeof(Program).Assembly.GetManifestResourceStream(CompiledRomResourceName))
         {
             if (compiledRomStream is not null)
@@ -249,20 +312,7 @@ internal static class Program
                 {
                     using var romBuffer = new MemoryStream();
                     compiledRomStream.CopyTo(romBuffer);
-                    loadedRom = SnesRom.LoadBytes(romBuffer.ToArray(), "compiled.sfc");
-                    var memoryBus = new SnesMemoryBus(loadedRom);
-                    cpuRunner = new NativeCpuRunner(memoryBus);
-                    memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
-                    frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
-                    smoothedRenderToPresentTicks = 0;
-                    previousTimestamp = Stopwatch.GetTimestamp();
-                    nextPresentationTimestamp = previousTimestamp;
-                    var regionName = loadedRom.Header.IsPalRegion ? "PAL" : "NTSC";
-                    statusMessage = $"Running compiled {loadedRom.Header.Title} · {loadedRom.Header.FrameRateHz:0.##} Hz game timing ({regionName})";
-                    if (!string.IsNullOrEmpty(audioError))
-                    {
-                        statusMessage += $" · {audioError}";
-                    }
+                    StartGame(SnesRom.LoadBytes(romBuffer.ToArray(), "compiled.sfc"));
                 }
                 catch (Exception exception) when (
                     exception is IOException
@@ -343,11 +393,20 @@ internal static class Program
                 {
                     running = false;
                 }
+                else if (eventType is SDL.EventType.WindowFocusLost or SDL.EventType.WindowFocusGained)
+                {
+                    windowFocused = eventType == SDL.EventType.WindowFocusGained;
+                    keyboardButtons = gamepadButtons = controllerButtons = SnesControllerButtons.None;
+                    cpuRunner?.MemoryBus.Hardware.SetControllerButtons(0, controllerButtons);
+                }
                 else if (eventType == SDL.EventType.WindowResized)
                 {
                     SDL.GetWindowSize(window, out var resizedWidth, out var resizedHeight);
-                    settings.WindowWidth = resizedWidth;
-                    settings.WindowHeight = resizedHeight;
+                    if (!appliedFullscreen)
+                    {
+                        settings.WindowWidth = resizedWidth;
+                        settings.WindowHeight = resizedHeight;
+                    }
                     settingsSavePending = true;
                     settingsSaveTimestamp = Stopwatch.GetTimestamp();
                 }
@@ -359,6 +418,12 @@ internal static class Program
                     {
                         settingsOpen = !settingsOpen;
                         rebindingAction = null;
+                    }
+                    else if (settingsOpen && settingsTab == SettingsTab.Player
+                        && HandlePlayerClick(mouseX, mouseY, settingsPanel, settings, out pendingPlayerCommand))
+                    {
+                        settingsSavePending = true;
+                        settingsSaveTimestamp = Stopwatch.GetTimestamp();
                     }
                     else if (settingsOpen && HandleSettingsClick(
                         mouseX,
@@ -386,6 +451,7 @@ internal static class Program
                 {
                     var isDown = eventType == SDL.EventType.KeyDown;
                     var key = @event.Key.Key;
+                    if (isDown && @event.Key.Repeat) continue;
                     if (isDown && rebindingAction.HasValue && key == SDL.Keycode.Escape)
                     {
                         rebindingAction = null;
@@ -393,9 +459,9 @@ internal static class Program
                     }
                     else if (isDown && rebindingAction.HasValue && bindingMode == BindingMode.Keyboard)
                     {
-                        if (key is SDL.Keycode.F1 or SDL.Keycode.F2)
+                        if (DesktopSettings.IsReservedKey(key))
                         {
-                            statusMessage = "F1 and F2 are reserved for app shortcuts.";
+                            statusMessage = "This key is reserved for an app shortcut.";
                         }
                         else if (TryGetActionForKey(settings, key, out var existingAction)
                             && existingAction != rebindingAction.Value)
@@ -414,6 +480,23 @@ internal static class Program
                             settingsSavePending = true;
                             settingsSaveTimestamp = Stopwatch.GetTimestamp();
                         }
+                    }
+                    else if (isDown && key is SDL.Keycode.F5 or SDL.Keycode.F8 or SDL.Keycode.F9)
+                    {
+                        pendingPlayerCommand = key == SDL.Keycode.F5 ? PlayerCommand.SaveState
+                            : key == SDL.Keycode.F8 ? PlayerCommand.LoadState : PlayerCommand.TogglePause;
+                    }
+                    else if (isDown && key == SDL.Keycode.F10)
+                    {
+                        settings.Muted = !settings.Muted;
+                        settingsSavePending = true;
+                        settingsSaveTimestamp = Stopwatch.GetTimestamp();
+                    }
+                    else if (isDown && key == SDL.Keycode.F11)
+                    {
+                        settings.Fullscreen = !settings.Fullscreen;
+                        settingsSavePending = true;
+                        settingsSaveTimestamp = Stopwatch.GetTimestamp();
                     }
                     else if (isDown && key == SDL.Keycode.F1)
                     {
@@ -482,7 +565,8 @@ internal static class Program
                 }
             }
 
-            gamepadButtons = GetGamepadControllerButtons(gamepad, settings);
+            gamepadButtons = windowFocused && !manuallyPaused
+                ? GetGamepadControllerButtons(gamepad, settings) : SnesControllerButtons.None;
             controllerButtons = keyboardButtons | gamepadButtons;
             cpuRunner?.MemoryBus.Hardware.SetControllerButtons(0, controllerButtons);
 
@@ -490,7 +574,6 @@ internal static class Program
             {
                 if (dialogResult.Error is not null)
                 {
-                    loadedRom = null;
                     statusMessage = dialogResult.Error;
                     continue;
                 }
@@ -502,39 +585,92 @@ internal static class Program
 
                 try
                 {
-                    loadedRom = SnesRom.Load(dialogResult.Path);
-                    var memoryBus = new SnesMemoryBus(loadedRom);
-                    cpuRunner = new NativeCpuRunner(memoryBus);
-                    memoryBus.Hardware.SetControllerButtons(0, controllerButtons);
-                    if (audioStream != IntPtr.Zero)
-                    {
-                        SDL.PauseAudioStreamDevice(audioStream);
-                        audioStreamPaused = true;
-                        SDL.ClearAudioStream(audioStream);
-                        smoothedAudioQueueSeconds = AudioTargetQueueSeconds;
-                    }
-
-                    frameAccumulator = 1.0 / loadedRom.Header.FrameRateHz;
-                    previousTimestamp = Stopwatch.GetTimestamp();
-                    nextPresentationTimestamp = previousTimestamp;
+                    StartGame(SnesRom.Load(dialogResult.Path));
                     elapsedSeconds = 0;
-                    var regionName = loadedRom.Header.IsPalRegion ? "PAL" : "NTSC";
-                    statusMessage = $"Running {loadedRom.Header.Title} · {loadedRom.Header.FrameRateHz:0.##} Hz game timing ({regionName})";
-                    if (!string.IsNullOrEmpty(audioError))
-                    {
-                        statusMessage += $" · {audioError}";
-                    }
                 }
                 catch (Exception exception) when (
                     exception is IOException
                         or UnauthorizedAccessException
                         or ArgumentException
-                        or NotSupportedException)
+                        or NotSupportedException
+                        or InvalidDataException)
                 {
-                    loadedRom = null;
-                    cpuRunner = null;
                     statusMessage = exception.Message;
                 }
+            }
+
+            if (pendingPlayerCommand != PlayerCommand.None)
+            {
+                try
+                {
+                    if (pendingPlayerCommand == PlayerCommand.TogglePause)
+                    {
+                        manuallyPaused = !manuallyPaused;
+                        keyboardButtons = SnesControllerButtons.None;
+                    }
+                    else if (loadedRom is null || saveStore is null)
+                        statusMessage = "Open a game first.";
+                    else if (pendingPlayerCommand == PlayerCommand.ExportReport)
+                        statusMessage = $"Report saved: {PlayerCompatibilityReport.Export(loadedRom, cpuRunner)}";
+                    else if (pendingPlayerCommand == PlayerCommand.OpenSaves)
+                    {
+                        Directory.CreateDirectory(saveStore.DirectoryPath);
+                        Process.Start(new ProcessStartInfo(saveStore.DirectoryPath) { UseShellExecute = true });
+                    }
+                    else if (pendingPlayerCommand == PlayerCommand.LoadState)
+                    {
+                        cpuRunner = saveStore.LoadState();
+                        keyboardButtons = gamepadButtons = controllerButtons = SnesControllerButtons.None;
+                        cpuRunner.MemoryBus.Hardware.SetControllerButtons(0, controllerButtons);
+                        frameAccumulator = 0;
+                        elapsedSeconds = 0;
+                        previousTimestamp = Stopwatch.GetTimestamp();
+                        ResetAudio();
+                        SnesVideoRenderer.RenderFrame(cpuRunner.MemoryBus.Hardware, frameBuffer, 1f);
+                        SDL.UpdateTexture(gameTexture, IntPtr.Zero, frameBuffer, SnesVideoRenderer.Width * SnesVideoRenderer.BytesPerPixel);
+                        statusMessage = "Quick save loaded.";
+                    }
+                    else if (cpuRunner is not null)
+                    {
+                        saveStore.SaveState(cpuRunner);
+                        statusMessage = "Quick save written.";
+                    }
+                    else statusMessage = "The game has stopped. Load a quick save to resume.";
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                    or InvalidDataException or ArgumentException or System.ComponentModel.Win32Exception)
+                { statusMessage = $"Player action failed: {exception.Message}"; }
+                pendingPlayerCommand = PlayerCommand.None;
+            }
+
+            if (settings.Fullscreen != appliedFullscreen)
+            {
+                if (SDL.SetWindowFullscreen(window, settings.Fullscreen)) appliedFullscreen = settings.Fullscreen;
+                else { settings.Fullscreen = appliedFullscreen; statusMessage = SDL.GetError(); }
+            }
+            var gain = settings.Muted ? 0f : settings.VolumePercent / 100f;
+            if (audioStream != IntPtr.Zero && gain != appliedGain)
+            {
+                if (SDL.SetAudioStreamGain(audioStream, gain)) appliedGain = gain;
+                else statusMessage = $"Could not set volume: {SDL.GetError()}";
+            }
+            var gamePaused = manuallyPaused || (settings.PauseWhenUnfocused && !windowFocused);
+            if (gamePaused != wasPaused)
+            {
+                frameAccumulator = 0;
+                elapsedSeconds = 0;
+                smoothedRenderToPresentTicks = 0;
+                if (gamePaused && audioStream != IntPtr.Zero)
+                {
+                    SDL.PauseAudioStreamDevice(audioStream);
+                    audioStreamPaused = true;
+                }
+                wasPaused = gamePaused;
+            }
+            if (Stopwatch.GetTimestamp() >= nextBatterySaveTimestamp)
+            {
+                PersistBattery();
+                nextBatterySaveTimestamp = Stopwatch.GetTimestamp() + Stopwatch.Frequency * 2;
             }
 
             var presentationTimestamp = Stopwatch.GetTimestamp();
@@ -558,7 +694,7 @@ internal static class Program
             var renderRequested = !verticalSyncEnabled || presentationTimestamp >= nextPresentationTimestamp;
             var presentedFrameRendererStart = 0L;
 
-            if (cpuRunner is not null)
+            if (cpuRunner is not null && !gamePaused)
             {
                 var emulationWorkStartTimestamp = Stopwatch.GetTimestamp();
                 try
@@ -697,7 +833,11 @@ internal static class Program
                     if (exception is MissingCompiledCodeException)
                     {
                         RecordExecutionFailure(exception, cpuRunner);
+                        try { PlayerCompatibilityReport.Export(loadedRom!, cpuRunner, exception.Message); }
+                        catch (Exception reportError) when (reportError is IOException or UnauthorizedAccessException) { }
                     }
+                    PersistBattery();
+                    ResetAudio();
                     cpuRunner = null;
                     frameAccumulator = 0;
                 }
@@ -741,6 +881,9 @@ internal static class Program
                     DrawLaunchScreen(renderer, textRenderer, gameArea, launchButton, statusMessage);
                 }
 
+                if (gamePaused && cpuRunner is not null)
+                    DrawCenteredText(renderer, textRenderer, "PAUSED - F9 to resume", gameArea.X + gameArea.W / 2,
+                        gameArea.Y + gameArea.H / 2, 20, MakeUiColor(255, 255, 255), true);
                 DrawSettingsCog(renderer, settingsButton, settingsOpen);
 
                 if (settingsOpen)
@@ -834,10 +977,10 @@ internal static class Program
                     if (presentedTimestamp >= nextTimingDisplayUpdate)
                     {
                         timingDisplay = new FrameTimingDisplay(
-                            $"Output: {measuredPresentedFrameRate:0.0} FPS · longest gap: {longestPresentationIntervalMilliseconds:0.0} ms",
-                            $"Avg ms: CPU {meanEmulationMilliseconds:0.0} · game {meanGameRenderMilliseconds:0.0} · draw {meanDrawMilliseconds:0.0}",
-                            $"Present {meanPresentMilliseconds:0.0} · wait {meanPacerWaitMilliseconds:0.0} · other {meanOtherMilliseconds:0.0} ms",
-                            $"Peak ms: CPU {peakEmulationMilliseconds:0.0} · game {peakGameRenderMilliseconds:0.0} · present {peakPresentMilliseconds:0.0}");
+                            $"Output: {measuredPresentedFrameRate:0.0} FPS Â· longest gap: {longestPresentationIntervalMilliseconds:0.0} ms",
+                            $"Avg ms: CPU {meanEmulationMilliseconds:0.0} Â· game {meanGameRenderMilliseconds:0.0} Â· draw {meanDrawMilliseconds:0.0}",
+                            $"Present {meanPresentMilliseconds:0.0} Â· wait {meanPacerWaitMilliseconds:0.0} Â· other {meanOtherMilliseconds:0.0} ms",
+                            $"Peak ms: CPU {peakEmulationMilliseconds:0.0} Â· game {peakGameRenderMilliseconds:0.0} Â· present {peakPresentMilliseconds:0.0}");
                         nextTimingDisplayUpdate = presentedTimestamp + Stopwatch.Frequency / 4;
                     }
                 }
@@ -890,6 +1033,7 @@ internal static class Program
             }
         }
 
+        PersistBattery();
         settings.Save();
 
         if (audioStream != IntPtr.Zero)
@@ -1246,15 +1390,15 @@ internal static class Program
     {
         X = panel.X + 12,
         Y = panel.Y + 52,
-        W = (panel.W - 28) / 2,
+        W = (panel.W - 32) / 3,
         H = 30,
     };
 
     private static SDL.FRect GetControlsTabButton(SDL.FRect panel) => new()
     {
-        X = panel.X + 16 + ((panel.W - 28) / 2),
+        X = panel.X + 16 + ((panel.W - 32) / 3),
         Y = panel.Y + 52,
-        W = (panel.W - 28) / 2,
+        W = (panel.W - 32) / 3,
         H = 30,
     };
 
@@ -1297,6 +1441,13 @@ internal static class Program
         if (IsInside(mouseX, mouseY, GetControlsTabButton(panel)))
         {
             settingsTab = SettingsTab.Controls;
+            rebindingAction = null;
+            return true;
+        }
+
+        if (IsInside(mouseX, mouseY, GetPlayerTabButton(panel)))
+        {
+            settingsTab = SettingsTab.Player;
             rebindingAction = null;
             return true;
         }
@@ -1350,6 +1501,8 @@ internal static class Program
 
             return false;
         }
+
+        if (settingsTab == SettingsTab.Player) return false;
 
         if (IsInside(mouseX, mouseY, GetResolutionRow(panel)))
         {
@@ -1430,7 +1583,12 @@ internal static class Program
         DrawSettingsTab(renderer, textRenderer, GetDisplayTabButton(panel), "DISPLAY", settingsTab == SettingsTab.Display);
         DrawSettingsTab(renderer, textRenderer, GetControlsTabButton(panel), "CONTROLS", settingsTab == SettingsTab.Controls);
 
-        if (settingsTab == SettingsTab.Display)
+        DrawSettingsTab(renderer, textRenderer, GetPlayerTabButton(panel), "PLAYER", settingsTab == SettingsTab.Player);
+        if (settingsTab == SettingsTab.Player)
+        {
+            DrawPlayerPanel(renderer, textRenderer, panel, settings, statusMessage);
+        }
+        else if (settingsTab == SettingsTab.Display)
         {
             DrawSettingsRow(renderer, textRenderer, GetResolutionRow(panel), $"Window size: {settings.WindowWidth} x {settings.WindowHeight}");
             DrawSettingsRow(renderer, textRenderer, GetAspectRatioRow(panel), $"Aspect ratio: {GetAspectRatioName(settings.AspectRatio)}");
@@ -1489,7 +1647,7 @@ internal static class Program
                 bindingMode == BindingMode.Gamepad);
             var controllerText = gamepad == IntPtr.Zero
                 ? "Controller: Not connected. Connect an XInput controller."
-                : $"Controller: {gamepadName} · D-pad and left stick move.";
+                : $"Controller: {gamepadName} Â· D-pad and left stick move.";
             var controlsMessage = rebindingAction.HasValue ? statusMessage : controllerText;
             DrawText(renderer, textRenderer,
                 Truncate(controlsMessage, Math.Max(16, (int)((panel.W - 40) / 8))),

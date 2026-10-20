@@ -18,6 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Smw2Pc.Core\Smw2Pc.Core.csproj" />
     <ProjectReference Include="..\..\src\Smw2Pc.Recompiler\Smw2Pc.Recompiler.csproj" />
+    <ProjectReference Include="..\..\src\Smw2Pc.Desktop\Smw2Pc.Desktop.csproj" />
     <Reference Include="Microsoft.CodeAnalysis">
       <HintPath>$(MSBuildSDKsPath)\..\Roslyn\bincore\Microsoft.CodeAnalysis.dll</HintPath>
     </Reference>
