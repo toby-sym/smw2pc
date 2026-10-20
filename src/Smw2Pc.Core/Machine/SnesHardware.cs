@@ -2,7 +2,7 @@ using Smw2Pc.Core.Audio;
 
 namespace Smw2Pc.Core.Machine;
 
-public sealed class SnesHardware
+public sealed partial class SnesHardware
 {
     private const int WorkRamSize = 0x20000;
     private const int VideoRamSize = 0x10000;

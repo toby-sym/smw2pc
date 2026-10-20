@@ -1,5 +1,6 @@
 using System.Text.Json;
 using SDL3;
+using Smw2Pc.Core.Storage;
 
 internal enum GameAspectRatio
 {
@@ -18,10 +19,12 @@ internal sealed class DesktopSettings
     private const int MinimumRenderFrameRate = 15;
     internal const int MaximumRenderFrameRate = 240;
 
-    private static readonly string SettingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "SMW2PC",
-        "settings.json");
+    private string settingsPath = Path.Combine(PlayerFiles.Root, "settings.json");
+
+    public int VolumePercent { get; set; } = 100;
+    public bool Muted { get; set; }
+    public bool PauseWhenUnfocused { get; set; } = true;
+    public bool Fullscreen { get; set; }
 
     public int WindowWidth { get; set; } = 960;
 
@@ -79,15 +82,23 @@ internal sealed class DesktopSettings
 
     public SDL.GamepadButton ButtonRGamepadButton { get; set; } = SDL.GamepadButton.RightShoulder;
 
-    public static DesktopSettings Load()
+    public static DesktopSettings Load(string? romSha256 = null, string? root = null)
     {
+        var path = romSha256 is null ? Path.Combine(root ?? PlayerFiles.Root, "settings.json")
+            : Path.Combine(PlayerFiles.RomDirectory(romSha256, root), "settings.json");
         try
         {
-            if (File.Exists(SettingsPath))
+            if (File.Exists(path) || File.Exists(path + ".bak"))
             {
-                var settings = JsonSerializer.Deserialize<DesktopSettings>(File.ReadAllText(SettingsPath));
+                var settings = PlayerFiles.ReadWithBackup(path, bytes =>
+                {
+                    try { return JsonSerializer.Deserialize<DesktopSettings>(bytes) ?? throw new InvalidDataException("Empty settings."); }
+                    catch (JsonException exception) { throw new InvalidDataException("Invalid settings.", exception); }
+                });
                 if (settings is not null)
                 {
+                    settings.settingsPath = path;
+                    settings.VolumePercent = Math.Clamp(settings.VolumePercent, 0, 100);
                     settings.WindowWidth = Math.Clamp(settings.WindowWidth, MinimumWindowWidth, MaximumWindowWidth);
                     settings.WindowHeight = Math.Clamp(settings.WindowHeight, MinimumWindowHeight, MaximumWindowHeight);
                     settings.RenderFrameRate = Math.Clamp(
@@ -129,30 +140,31 @@ internal sealed class DesktopSettings
                 }
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
         {
             // Fall back to usable defaults when the optional settings file is unreadable.
         }
 
-        return new DesktopSettings();
+        var defaults = romSha256 is null ? new DesktopSettings() : Load(root: root);
+        defaults.settingsPath = path;
+        return defaults;
     }
 
     public void Save()
-    {
-        try
-        {
-            var directory = Path.GetDirectoryName(SettingsPath);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
+        => SaveAsync().GetAwaiter().GetResult();
 
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+    public Task SaveAsync()
+    {
+        var path = settingsPath;
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(this, new JsonSerializerOptions { WriteIndented = true });
+        return Task.Run(() =>
         {
-            // Settings are optional; a write failure should not interrupt gameplay.
-        }
+            try { PlayerFiles.WriteAtomic(path, bytes); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Settings are optional; a write failure should not interrupt gameplay.
+            }
+        });
     }
 
     public static int ClampRenderFrameRate(int frameRate)
@@ -160,9 +172,12 @@ internal sealed class DesktopSettings
         return Math.Clamp(frameRate, MinimumRenderFrameRate, MaximumRenderFrameRate);
     }
 
+    internal static bool IsReservedKey(SDL.Keycode key) => key is SDL.Keycode.F1 or SDL.Keycode.F2
+        or SDL.Keycode.F5 or SDL.Keycode.F8 or SDL.Keycode.F9 or SDL.Keycode.F10 or SDL.Keycode.F11;
+
     private static SDL.Keycode GetValidKey(SDL.Keycode key, SDL.Keycode fallback)
     {
-        return Enum.IsDefined(key) && key != SDL.Keycode.Unknown ? key : fallback;
+        return Enum.IsDefined(key) && key != SDL.Keycode.Unknown && !IsReservedKey(key) ? key : fallback;
     }
 
     private static SDL.GamepadButton GetValidGamepadButton(SDL.GamepadButton button, SDL.GamepadButton fallback)

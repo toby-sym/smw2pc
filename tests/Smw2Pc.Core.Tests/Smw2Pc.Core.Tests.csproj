@@ -12,12 +12,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\Fixtures\HomebrewRom.cs" Link="Fixtures\HomebrewRom.cs" />
+    <None Include="..\Fixtures\*.json" Link="Fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Smw2Pc.Core\Smw2Pc.Core.csproj" />
     <ProjectReference Include="..\..\src\Smw2Pc.Recompiler\Smw2Pc.Recompiler.csproj" />
+    <ProjectReference Include="..\..\src\Smw2Pc.Desktop\Smw2Pc.Desktop.csproj" />
     <Reference Include="Microsoft.CodeAnalysis">
       <HintPath>$(MSBuildSDKsPath)\..\Roslyn\bincore\Microsoft.CodeAnalysis.dll</HintPath>
     </Reference>

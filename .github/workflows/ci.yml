@@ -6,6 +6,9 @@ on:
       ref:
         type: string
         required: true
+      upload_gameplay_artifacts:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -29,3 +32,38 @@ jobs:
       - name: Check build version rules
         shell: pwsh
         run: ./tools/test-build-version.ps1
+
+  gameplay:
+    name: Homebrew gameplay (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Check saves, settings and replay baselines
+        run: dotnet test tests/Smw2Pc.Core.Tests/Smw2Pc.Core.Tests.csproj --configuration Release --filter "FullyQualifiedName~Player|FullyQualifiedName~GameplayReplay"
+      - name: Compile and replay original PAL and NTSC homebrew
+        shell: pwsh
+        run: ./tools/test-homebrew-gameplay.ps1
+      - name: Exercise player controls with SDL dummy devices
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/test-player-ui.ps1
+      - name: Upload gameplay results
+        if: ${{ always() && inputs.upload_gameplay_artifacts }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: homebrew-gameplay-${{ matrix.os }}
+          path: |
+            artifacts/homebrew-gameplay/*/*-result.json
+            artifacts/homebrew-gameplay/*/final-frame.bmp
+            artifacts/homebrew-gameplay/*/source/compatibility.html
+            artifacts/player-ui-checks/*.bmp
+            artifacts/player-ui-checks/ui-result.json

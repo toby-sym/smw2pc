@@ -44,6 +44,7 @@ public static class ProofPlayback
         }
         hash.AppendData(buffer.GetBuffer().AsSpan(0, (int)buffer.Length));
         var hardware = runner.MemoryBus.Hardware;
+        hash.AppendData(runner.MemoryBus.SaveRam.Span);
         hash.AppendData(hardware.WorkRam.Span);
         hash.AppendData(hardware.VideoRam.Span);
         hash.AppendData(hardware.ColorRam.Span);

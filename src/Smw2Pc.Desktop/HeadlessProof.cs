@@ -35,6 +35,8 @@ internal static class HeadlessProof
             string? report = null;
             string? screenshot = null;
             string? romPath = null;
+            string? replayPath = null;
+            string? baselinePath = null;
             for (var i = 0; i < args.Length; i++)
             {
                 switch (args[i])
@@ -45,6 +47,8 @@ internal static class HeadlessProof
                     case "--report": report = args[++i]; break;
                     case "--screenshot": screenshot = args[++i]; break;
                     case "--rom": romPath = args[++i]; break;
+                    case "--replay": replayPath = args[++i]; break;
+                    case "--expect": baselinePath = args[++i]; break;
                     default: throw new ArgumentException($"Unknown option {args[i]}.");
                 }
             }
@@ -57,6 +61,26 @@ internal static class HeadlessProof
                 using var bytes = new MemoryStream();
                 stream.CopyTo(bytes);
                 rom = SnesRom.LoadBytes(bytes.ToArray(), "embedded.sfc");
+            }
+            if (baselinePath is not null && replayPath is null)
+                throw new ArgumentException("--expect requires --replay.");
+            if (replayPath is not null)
+            {
+                var script = JsonSerializer.Deserialize<ReplayScript>(File.ReadAllText(replayPath))
+                    ?? throw new InvalidDataException("Invalid replay script.");
+                var baseline = baselinePath is null ? null
+                    : JsonSerializer.Deserialize<ReplayResult>(File.ReadAllText(baselinePath))
+                        ?? throw new InvalidDataException("Invalid replay baseline.");
+                var replayRunner = new NativeCpuRunner(new SnesMemoryBus(rom));
+                var outcome = GameplayReplay.Run(replayRunner, script, baseline);
+                if (screenshot is not null) WriteBitmap(screenshot, replayRunner.MemoryBus.Hardware);
+                if (report is not null)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(report))!);
+                    File.WriteAllText(report, JsonSerializer.Serialize(outcome, new JsonSerializerOptions { WriteIndented = true }));
+                }
+                Console.WriteLine($"Replay passed: {outcome.Frames} frames, {outcome.Checkpoints.Count} state/video/audio checkpoints.");
+                return 0;
             }
             ProofDocument proof;
             if (verify)
