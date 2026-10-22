@@ -18,6 +18,13 @@ internal sealed class CodeDiscovery(SnesRom rom)
         .OrderBy(b => b.StartAddress).ThenBy(b => b.StatusMode).ThenBy(b => b.EmulationMode)
         .ThenBy(b => Convert.ToHexString(b.SourceBytes)).ToArray();
 
+    public void AddEntryPoint(uint address)
+    {
+        if (!bus.IsCartridgeRomAddress(address))
+            throw new ArgumentOutOfRangeException(nameof(address), $"${address:X6} is not a cartridge ROM address.");
+        AllModes(bus.CanonicalCodeAddress(address));
+    }
+
     public void AddObserved(DecodedCpuBlock block)
     {
         block = block with
@@ -83,7 +90,12 @@ internal sealed class CodeDiscovery(SnesRom rom)
                 case CpuOperation.ReturnFromInterrupt:
                     break;
                 case CpuOperation.JumpAbsolute: Next(bank | (ushort)last.Operand); break;
-                case CpuOperation.JumpLong: Next(last.Operand); break;
+                case CpuOperation.JumpLong:
+                    Next(last.Operand);
+                    if (dispatchers.TryGetTailDispatchTable(block, bus.CanonicalCodeAddress(last.Operand),
+                            out var tailTable, out var tailWidth))
+                        ExpandTable(tailTable, tailWidth, mode, emulation);
+                    break;
                 case CpuOperation.CallAbsolute:
                     Next(bank | (ushort)last.Operand); Next(next); break;
                 case CpuOperation.CallLong:

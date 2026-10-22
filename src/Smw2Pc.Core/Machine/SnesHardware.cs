@@ -6,6 +6,7 @@ public sealed partial class SnesHardware
 {
     private const int WorkRamSize = 0x20000;
     private const int VideoRamSize = 0x10000;
+    private const int VideoRamWordAddressMask = (VideoRamSize / 2) - 1;
     private const int ControllerCount = 2;
     internal const int InstructionsPerFrame = 18000;
     private const int Mode7ParameterCount = 8;
@@ -520,7 +521,7 @@ public sealed partial class SnesHardware
         if (address is >= 0x2139 and <= 0x213A)
         {
             var highByte = address == 0x213A;
-            value = videoRam[(videoRamWordAddress << 1) | (highByte ? 1 : 0)];
+            value = videoRam[GetVideoRamByteAddress(highByte)];
             IncrementVideoRamAddress(highByte);
             return true;
         }
@@ -788,17 +789,17 @@ public sealed partial class SnesHardware
 
                 break;
             case 0x2116:
-                videoRamWordAddress = (ushort)((videoRamWordAddress & 0xFF00) | value);
+                videoRamWordAddress = (ushort)((videoRamWordAddress & 0x7F00) | value);
                 break;
             case 0x2117:
-                videoRamWordAddress = (ushort)((videoRamWordAddress & 0x00FF) | (value << 8));
+                videoRamWordAddress = (ushort)((videoRamWordAddress & 0x00FF) | ((value & 0x7F) << 8));
                 break;
             case 0x2118:
-                videoRam[videoRamWordAddress << 1] = value;
+                videoRam[GetVideoRamByteAddress(highByte: false)] = value;
                 IncrementVideoRamAddress(highByte: false);
                 break;
             case 0x2119:
-                videoRam[(videoRamWordAddress << 1) | 1] = value;
+                videoRam[GetVideoRamByteAddress(highByte: true)] = value;
                 IncrementVideoRamAddress(highByte: true);
                 break;
             case 0x2121:
@@ -898,8 +899,11 @@ public sealed partial class SnesHardware
             1 => 32,
             _ => 128,
         };
-        videoRamWordAddress = (ushort)(videoRamWordAddress + increment);
+        videoRamWordAddress = (ushort)((videoRamWordAddress + increment) & VideoRamWordAddressMask);
     }
+
+    private int GetVideoRamByteAddress(bool highByte)
+        => ((videoRamWordAddress & VideoRamWordAddressMask) << 1) | (highByte ? 1 : 0);
 
     private void SetWorkRamPortAddress(ushort register, byte value)
     {

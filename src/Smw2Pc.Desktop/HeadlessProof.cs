@@ -36,6 +36,7 @@ internal static class HeadlessProof
             string? report = null;
             string? screenshot = null;
             string? romPath = null;
+            string? snapshotPath = null;
             string? replayPath = null;
             string? baselinePath = null;
             for (var i = 0; i < args.Length; i++)
@@ -48,6 +49,7 @@ internal static class HeadlessProof
                     case "--report": report = args[++i]; break;
                     case "--screenshot": screenshot = args[++i]; break;
                     case "--rom": romPath = args[++i]; break;
+                    case "--snapshot": snapshotPath = args[++i]; break;
                     case "--replay": replayPath = args[++i]; break;
                     case "--expect": baselinePath = args[++i]; break;
                     default: throw new ArgumentException($"Unknown option {args[i]}.");
@@ -65,6 +67,26 @@ internal static class HeadlessProof
             }
             if (baselinePath is not null && replayPath is null)
                 throw new ArgumentException("--expect requires --replay.");
+            if (snapshotPath is not null)
+            {
+                if (verify || replayPath is not null || baselinePath is not null)
+                    throw new ArgumentException("--snapshot cannot be combined with --verify, --replay or --expect.");
+                var runner = MachineSnapshot.Restore(rom, File.ReadAllBytes(snapshotPath));
+                runner.MemoryBus.Widescreen.Enabled = widescreen
+                    || profileName.StartsWith("wide-", StringComparison.Ordinal);
+                for (var frame = 0; frame < frames; frame++)
+                {
+                    runner.MemoryBus.Hardware.SetControllerButtons(0,
+                        ProofPlayback.Buttons(profileName, frame, runner.MemoryBus));
+                    runner.Run(18_000);
+                    if (runner.State.Halted)
+                        throw new InvalidOperationException($"CPU halted at snapshot replay frame {frame + 1}.");
+                }
+                if (screenshot is not null)
+                    WriteBitmap(screenshot, runner.MemoryBus.Hardware, runner.MemoryBus.Widescreen.Enabled);
+                Console.WriteLine($"Snapshot replay completed: {frames} frames, game mode ${runner.MemoryBus.ReadByte(0x7E0100):X2}, level ${runner.MemoryBus.ReadByte(0x7E13BF):X2}, CPU ${runner.State.ProgramBank:X2}:{runner.State.ProgramCounter:X4}.");
+                return 0;
+            }
             if (replayPath is not null)
             {
                 var script = JsonSerializer.Deserialize<ReplayScript>(File.ReadAllText(replayPath))

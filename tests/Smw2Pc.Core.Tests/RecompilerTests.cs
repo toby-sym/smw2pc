@@ -67,6 +67,25 @@ public sealed class RecompilerTests
     }
 
     [TestMethod]
+    public void ExplicitEntryPointsCompileUnobservedNativeAndEmulationModes()
+    {
+        var program = new byte[0x8000];
+        program[0x80] = 0xC2; program[0x81] = 0x30; program[0x82] = 0xDB;
+        var discovery = new CodeDiscovery(Rom(program));
+
+        discovery.AddEntryPoint(0x008080);
+        discovery.Analyze();
+
+        foreach (var mode in new byte[] { 0x00, 0x10, 0x20, 0x30 })
+            Assert.IsTrue(discovery.Blocks.Any(block => block.StartAddress == 0x008080
+                && block.StatusMode == mode && !block.EmulationMode), $"Missing native M/X=${mode:X2} entry.");
+        Assert.IsTrue(discovery.Blocks.Any(block => block.StartAddress == 0x008080
+            && block.StatusMode == 0x30 && block.EmulationMode));
+        Assert.IsTrue(discovery.Blocks.Any(block => block.StartAddress == 0x008082
+            && block.StatusMode == 0 && !block.EmulationMode));
+    }
+
+    [TestMethod]
     public void SmwInlineDispatcherFindsTargetsAndDoesNotDecodeThePointerTableAsCode()
     {
         var program = new byte[0x800];
